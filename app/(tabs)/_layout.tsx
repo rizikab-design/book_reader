@@ -15,7 +15,7 @@ export default function TabLayout() {
         headerShown: useClientOnlyValue(false, true),
       }}>
       <Tabs.Screen
-        name="library"
+        name="index"
         options={{
           title: 'Library',
         }}
