@@ -278,6 +278,7 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
         textLayer.innerHTML = '';
         textLayer.style.width = `${viewport.width}px`;
         textLayer.style.height = `${viewport.height}px`;
+        textLayer.style.setProperty('--scale-factor', String(scale));
 
         const pdfjsLib = await import('pdfjs-dist');
         // @ts-ignore — renderTextLayer exists in pdfjs-dist
