@@ -3,6 +3,7 @@ import { StyleSheet, Platform } from 'react-native';
 
 import { Text, View } from '@/components/Themed';
 import { getAvailableVoices } from '@/lib/tts-engine';
+import { getGoogleClientId, setGoogleClientId } from '@/lib/google-drive';
 
 const FAVORITES_KEY = 'tts-favorite-voices';
 const PREFERRED_VOICE_KEY = 'tts-preferred-voice';
@@ -25,10 +26,12 @@ export default function SettingsScreen() {
   const [favorites, setFavorites] = useState<string[]>([]);
   const [previewVoice, setPreviewVoice] = useState<string | null>(null);
   const [preferredVoice, setPreferredVoice] = useState<string>('');
+  const [googleClientId, setGoogleClientIdState] = useState<string>('');
 
   useEffect(() => {
     if (Platform.OS !== 'web') return;
     setFavorites(loadFavorites());
+    setGoogleClientIdState(getGoogleClientId());
     try {
       setPreferredVoice(localStorage.getItem(PREFERRED_VOICE_KEY) || '');
     } catch {}
@@ -79,6 +82,40 @@ export default function SettingsScreen() {
     <div style={webStyles.container}>
       <div style={webStyles.header}>
         <h1 style={webStyles.title}>Settings</h1>
+      </div>
+
+      <div style={webStyles.section}>
+        <h2 style={webStyles.sectionTitle}>Google Drive Export</h2>
+        <p style={webStyles.sectionDesc}>
+          Export your highlights and notes to Google Drive in Cornell note format.
+          To set up, create a Google Cloud project and OAuth 2.0 Client ID.
+        </p>
+        <details style={{ fontSize: '13px', color: '#666', marginBottom: '12px', lineHeight: '1.6' }}>
+          <summary style={{ cursor: 'pointer', color: '#2f95dc', fontWeight: 500 }}>Setup instructions</summary>
+          <ol style={{ paddingLeft: '20px', marginTop: '8px' }}>
+            <li>Go to <a href="https://console.cloud.google.com" target="_blank" rel="noopener noreferrer" style={{ color: '#2f95dc' }}>Google Cloud Console</a></li>
+            <li>Create a new project (or use an existing one)</li>
+            <li>Go to "APIs &amp; Services" &rarr; "Library" and enable <strong>Google Drive API</strong></li>
+            <li>Go to "APIs &amp; Services" &rarr; "Credentials"</li>
+            <li>Click "Create Credentials" &rarr; "OAuth 2.0 Client ID"</li>
+            <li>Choose "Web application" as application type</li>
+            <li>Under "Authorized JavaScript Origins", add: <code>http://localhost:8081</code></li>
+            <li>Copy the Client ID and paste it below</li>
+          </ol>
+        </details>
+        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+          <input
+            type="text"
+            value={googleClientId}
+            onChange={(e) => {
+              setGoogleClientIdState(e.target.value);
+              setGoogleClientId(e.target.value);
+            }}
+            placeholder="Paste your Google Client ID here"
+            style={{ ...webStyles.preferredSelect, flex: 1 }}
+          />
+          {googleClientId && <span style={{ color: '#4CAF50', fontSize: '13px', fontWeight: 500 }}>Configured</span>}
+        </div>
       </div>
 
       <div style={webStyles.section}>

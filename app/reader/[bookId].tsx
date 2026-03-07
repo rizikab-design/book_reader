@@ -1,11 +1,8 @@
 /**
- * Reader Screen — Apple Books-style layout
+ * Reader Screen — Apple Books-style layout (ePub)
  *
- * Phase 1: Render ePub with epub.js (DONE)
- * Phase 2: Extract text from chapters (DONE)
- * Phase 3: Text-to-Speech (DONE)
- * Phase 4: Word highlighting during TTS (DONE)
- * Phase 5: Select text to highlight + add notes (THIS PHASE)
+ * State management delegated to shared hooks in @/hooks/*.
+ * ePub-specific logic (iframe, epub.js, word spans) stays here.
  */
 
 import { useEffect, useRef, useState } from 'react';
@@ -13,43 +10,18 @@ import { StyleSheet, Pressable, Platform } from 'react-native';
 import { useLocalSearchParams, router } from 'expo-router';
 
 import { Text, View } from '@/components/Themed';
-import {
-  speakText,
-  stopSpeaking,
-  pauseSpeaking,
-  resumeSpeaking,
-  getAvailableVoices,
-} from '@/lib/tts-engine';
+import { stopSpeaking } from '@/lib/tts-engine';
 import { getBookUrl, fetchBooks, BookEntry } from '@/lib/api';
 import PdfReader from '@/components/PdfReader';
 
-type HighlightColor = 'yellow' | 'blue' | 'green' | 'pink';
-
-const HIGHLIGHT_COLORS: Record<HighlightColor, string> = {
-  yellow: '#FFEB3B',
-  blue: '#90CAF9',
-  green: '#A5D6A7',
-  pink: '#F48FB1',
-};
-
-interface Highlight {
-  id: number;
-  selectedText: string;
-  note: string;
-  color: HighlightColor;
-  pageInfo: string;
-  // We store the text of surrounding words to re-find this highlight after page turns
-  cfiRange?: string;
-  createdAt: string;
-}
-
-// Popup state for when user selects text
-interface SelectionPopup {
-  x: number;
-  y: number;
-  selectedText: string;
-  range: Range | null;
-}
+import { HighlightColor, HIGHLIGHT_COLORS, ThemeName, themes } from '@/hooks/reader-types';
+import { useToast } from '@/hooks/useToast';
+import { useAutoHideBars } from '@/hooks/useAutoHideBars';
+import { useReaderTheme } from '@/hooks/useReaderTheme';
+import { useReaderSearch } from '@/hooks/useReaderSearch';
+import { useReaderTts } from '@/hooks/useReaderTts';
+import { useReaderHighlights } from '@/hooks/useReaderHighlights';
+import { useReaderBookmarks } from '@/hooks/useReaderBookmarks';
 
 export default function ReaderScreen() {
   const { bookId } = useLocalSearchParams<{ bookId: string }>();
@@ -58,15 +30,7 @@ export default function ReaderScreen() {
   const renditionRef = useRef<any>(null);
   const bookRef = useRef<any>(null);
 
-  const storageKey = (key: string) => `reader-${bookId}-${key}`;
-
-  function loadStored<T>(key: string, fallback: T): T {
-    try {
-      const val = localStorage.getItem(storageKey(key));
-      return val ? JSON.parse(val) : fallback;
-    } catch { return fallback; }
-  }
-
+  // ── Core state ──────────────────────────────────────────────────────
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [locationInfo, setLocationInfo] = useState('');
@@ -81,202 +45,100 @@ export default function ReaderScreen() {
   const [isEditingPage, setIsEditingPage] = useState(false);
   const pageInputRef = useRef<HTMLInputElement | null>(null);
 
-  // TTS
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [ttsSpeed, setTtsSpeed] = useState(() => loadStored<number>('ttsSpeed', 1));
-  const [currentWordIndex, setCurrentWordIndex] = useState(-1);
-
-  // Voice selection
-  const [availableVoices, setAvailableVoices] = useState<SpeechSynthesisVoice[]>([]);
-  const [selectedVoice, setSelectedVoice] = useState<SpeechSynthesisVoice | null>(null);
-  const selectedVoiceRef = useRef<SpeechSynthesisVoice | null>(null);
-
-  // TTS speed ref (for closures)
-  const ttsSpeedRef = useRef(ttsSpeed);
-  const startTTSFromWordRef = useRef<(fromWordIndex: number, rate: number) => void>(() => {});
-  const handlePlayPauseRef = useRef<() => void>(() => {});
-
-  // Word injection for TTS
+  // Word injection for TTS (ePub-specific)
   const iframeWordsRef = useRef<string>('');
   const iframeWordsArrayRef = useRef<string[]>([]);
   const [wordsReady, setWordsReady] = useState(false);
   const prevHighlightRef = useRef<Element | null>(null);
-  const resumeWordIndexRef = useRef<number>(-1);
-  const currentWordIndexRef = useRef<number>(-1);
-  const isPlayingRef = useRef(false);
-  const ttsGenRef = useRef(0);
+
   // Track iframe listeners for cleanup on page turn
   const iframeListenersRef = useRef<{ doc: Document; type: string; handler: any }[]>([]);
-
-  // Speed editing
-  const [isEditingSpeed, setIsEditingSpeed] = useState(false);
-  const [speedInput, setSpeedInput] = useState('');
 
   // Table of contents
   const [tocItems, setTocItems] = useState<{ label: string; href: string; level: number }[]>([]);
   const [showToc, setShowToc] = useState(false);
 
-  // Bookmarks
-  const [bookmarks, setBookmarks] = useState<{ id: number; page: number; label: string; cfi: string }[]>(() => loadStored('bookmarks', []));
-  const [showBookmarks, setShowBookmarks] = useState(false);
-  const bookmarkIdRef = useRef(loadStored<number>('bookmarkNextId', 0));
+  // ePub CFI for bookmarks
   const currentCfiRef = useRef<string>('');
-  const [editingBookmarkId, setEditingBookmarkId] = useState<number | null>(null);
-  const [bookmarkTitleInput, setBookmarkTitleInput] = useState('');
-
-  // Themes & Display
-  type ThemeName = 'original' | 'quiet' | 'paper' | 'bold' | 'calm' | 'focus';
-  const [showThemes, setShowThemes] = useState(false);
-  const [activeTheme, setActiveTheme] = useState<ThemeName>(() => {
-    try { const v = localStorage.getItem('reader-global-theme'); return v ? JSON.parse(v) : 'original'; } catch { return 'original' as ThemeName; }
-  });
-  const [fontSize, setFontSize] = useState(() => {
-    try { const v = localStorage.getItem('reader-global-fontSize'); return v ? JSON.parse(v) : 100; } catch { return 100; }
-  });
-
-  const activeThemeRef = useRef<ThemeName>(activeTheme);
-  const fontSizeRef = useRef(fontSize);
-
-  const themes: Record<ThemeName, { label: string; bg: string; text: string; fontWeight?: string; fontFamily?: string }> = {
-    original: { label: 'Original', bg: '#ffffff', text: '#000000' },
-    quiet: { label: 'Quiet', bg: '#3e3e3e', text: '#d4d4d4' },
-    paper: { label: 'Paper', bg: '#e8e4dc', text: '#4a4a4a' },
-    bold: { label: 'Bold', bg: '#ffffff', text: '#000000', fontWeight: 'bold' },
-    calm: { label: 'Calm', bg: '#f0e6c8', text: '#5a4e3a', fontFamily: 'Georgia, serif' },
-    focus: { label: 'Focus', bg: '#faf5e4', text: '#3a3a2a', fontFamily: 'Georgia, serif' },
-  };
-
-  // Highlights & Notes
-  const [highlights, setHighlights] = useState<Highlight[]>(() => loadStored('highlights', []));
-  const [showSidebar, setShowSidebar] = useState(false);
-  const highlightIdRef = useRef(loadStored<number>('highlightNextId', 0));
-  const highlightsRef = useRef<Highlight[]>(highlights);
-
-  // Selection popup
-  const [selectionPopup, setSelectionPopup] = useState<SelectionPopup | null>(null);
-  const [noteText, setNoteText] = useState('');
-  const [selectedColor, setSelectedColor] = useState<HighlightColor>('yellow');
-
-  // Editing an existing highlight's note
-  const [editingHighlightId, setEditingHighlightId] = useState<number | null>(null);
-  const [editNoteText, setEditNoteText] = useState('');
-
-  // Popup drag state
-  const [popupPos, setPopupPos] = useState<{ x: number; y: number } | null>(null);
-  const [isDraggingPopup, setIsDraggingPopup] = useState(false);
-  const popupDragRef = useRef<{ startX: number; startY: number; origX: number; origY: number } | null>(null);
 
   // Overall book progress (0-1)
   const [bookProgress, setBookProgress] = useState(0);
 
-  // Search
-  const [showSearch, setShowSearch] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [searchResults, setSearchResults] = useState<{ cfi: string; excerpt: string }[]>([]);
-  const [isSearching, setIsSearching] = useState(false);
-  const searchInputRef = useRef<HTMLInputElement | null>(null);
-  const searchCancelRef = useRef(false);
-
-  // Keyboard shortcuts help
+  // Panels
+  const [showThemes, setShowThemes] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
 
-  // Auto-hide bars
-  const [barsVisible, setBarsVisible] = useState(true);
-  const barsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Toast notifications
-  const [toast, setToast] = useState<string | null>(null);
-  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Popup drag — ePub-only (iframe overlay needed)
+  const [isDraggingPopup, setIsDraggingPopup] = useState(false);
 
-  // Keep ttsSpeed ref in sync
-  useEffect(() => { ttsSpeedRef.current = ttsSpeed; }, [ttsSpeed]);
-  useEffect(() => { currentWordIndexRef.current = currentWordIndex; }, [currentWordIndex]);
-  useEffect(() => { isPlayingRef.current = isPlaying; }, [isPlaying]);
-  useEffect(() => { highlightsRef.current = highlights; }, [highlights]);
+  // ── Shared hooks ────────────────────────────────────────────────────
+  const { toast, showToast } = useToast();
+  const { barsVisible } = useAutoHideBars();
+  const { activeTheme, setActiveTheme, fontSize, setFontSize, themeColors, panelTheme, panelBorder, changeFontSize: changeFontSizeBase } = useReaderTheme();
+  const { showSearch, setShowSearch, searchQuery, setSearchQuery, searchResults, setSearchResults, isSearching, setIsSearching, searchInputRef, searchCancelRef, openSearch, closeSearch } = useReaderSearch();
 
-  // Load available voices and favorites
-  const [favoriteVoiceNames, setFavoriteVoiceNames] = useState<string[]>([]);
+  const tts = useReaderTts({
+    bookId: bookId!,
+    getWords: () => iframeWordsArrayRef.current,
+    onTtsEnd: () => {
+      if (prevHighlightRef.current) {
+        prevHighlightRef.current.classList.remove('tts-active');
+        prevHighlightRef.current = null;
+      }
+    },
+  });
 
+  const hlState = useReaderHighlights({
+    bookId: bookId!,
+    bookTitle,
+    showToast,
+  });
+
+  const bmState = useReaderBookmarks({
+    bookId: bookId!,
+    currentPage,
+    showToast,
+    getCurrentCfi: () => currentCfiRef.current,
+  });
+
+  // ── Theme refs for iframe content hook (stale closure prevention) ──
+  const activeThemeRef = useRef(activeTheme);
+  const fontSizeRef = useRef(fontSize);
+  useEffect(() => { activeThemeRef.current = activeTheme; }, [activeTheme]);
+  useEffect(() => { fontSizeRef.current = fontSize; }, [fontSize]);
+
+  // ── TTS word highlight effect ─────────────────────────────────────
   useEffect(() => {
-    if (Platform.OS !== 'web') return;
-    try {
-      const stored = localStorage.getItem('tts-favorite-voices');
-      if (stored) setFavoriteVoiceNames(JSON.parse(stored));
-    } catch {}
-    getAvailableVoices().then((voices) => {
-      const englishVoices = voices.filter((v) => v.lang.startsWith('en'));
-      setAvailableVoices(englishVoices);
-      // Load preferred voice from settings
-      try {
-        const preferredName = localStorage.getItem('tts-preferred-voice');
-        if (preferredName) {
-          const voice = englishVoices.find((v) => v.name === preferredName);
-          if (voice) {
-            setSelectedVoice(voice);
-            selectedVoiceRef.current = voice;
-          }
-        }
-      } catch {}
-    });
-  }, []);
-
-  // Persist state to localStorage
-  useEffect(() => { localStorage.setItem(storageKey('bookmarks'), JSON.stringify(bookmarks)); localStorage.setItem(storageKey('bookmarkNextId'), JSON.stringify(bookmarkIdRef.current)); }, [bookmarks]);
-  useEffect(() => { localStorage.setItem(storageKey('highlights'), JSON.stringify(highlights)); localStorage.setItem(storageKey('highlightNextId'), JSON.stringify(highlightIdRef.current)); }, [highlights]);
-  useEffect(() => { localStorage.setItem('reader-global-theme', JSON.stringify(activeTheme)); }, [activeTheme]);
-  useEffect(() => { localStorage.setItem('reader-global-fontSize', JSON.stringify(fontSize)); }, [fontSize]);
-  useEffect(() => { localStorage.setItem(storageKey('ttsSpeed'), JSON.stringify(ttsSpeed)); }, [ttsSpeed]);
-
-  // Clean up TTS on unmount
-  useEffect(() => {
-    return () => stopSpeaking();
-  }, []);
-
-  // TTS word highlight
-  useEffect(() => {
-    if (currentWordIndex < 0) return;
+    if (tts.currentWordIndex < 0) return;
     const iframeDoc = getIframeDocument();
     if (!iframeDoc) return;
-
-    if (prevHighlightRef.current) {
-      prevHighlightRef.current.classList.remove('tts-active');
-    }
-
-    const span = iframeDoc.querySelector(`[data-tts-idx="${currentWordIndex}"]`);
+    if (prevHighlightRef.current) prevHighlightRef.current.classList.remove('tts-active');
+    const span = iframeDoc.querySelector(`[data-tts-idx="${tts.currentWordIndex}"]`);
     if (span) {
       span.classList.add('tts-active');
       prevHighlightRef.current = span;
-
       const rect = span.getBoundingClientRect();
       const containerWidth = iframeDoc.documentElement.clientWidth;
       if (rect.left > containerWidth || rect.right < 0) {
         if (renditionRef.current) renditionRef.current.next();
       }
     }
-  }, [currentWordIndex]);
+  }, [tts.currentWordIndex]);
 
-  // Auto-hide bars after 3s of inactivity
-  function resetBarsTimer() {
-    setBarsVisible(true);
-    if (barsTimerRef.current) clearTimeout(barsTimerRef.current);
-    barsTimerRef.current = setTimeout(() => setBarsVisible(false), 3000);
-  }
+  // ── Close popup on outside click ──────────────────────────────────
   useEffect(() => {
-    if (Platform.OS !== 'web') return;
-    function handleMouseMove() { resetBarsTimer(); }
-    window.addEventListener('mousemove', handleMouseMove);
-    resetBarsTimer();
-    return () => {
-      window.removeEventListener('mousemove', handleMouseMove);
-      if (barsTimerRef.current) clearTimeout(barsTimerRef.current);
-    };
-  }, []);
+    if (!hlState.selectionPopup) return;
+    function handleClick(e: MouseEvent) {
+      const target = e.target as HTMLElement;
+      if (target.closest('[data-popup]')) return;
+      hlState.setSelectionPopup(null);
+      hlState.setShowDict(false);
+    }
+    const timer = setTimeout(() => window.addEventListener('click', handleClick), 100);
+    return () => { clearTimeout(timer); window.removeEventListener('click', handleClick); };
+  }, [hlState.selectionPopup]);
 
-  function showToast(msg: string) {
-    setToast(msg);
-    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
-    toastTimerRef.current = setTimeout(() => setToast(null), 2000);
-  }
-
+  // ── Load book on mount ────────────────────────────────────────────
   useEffect(() => {
     if (Platform.OS !== 'web') return;
     loadBook();
@@ -287,6 +149,30 @@ export default function ReaderScreen() {
       }
     };
   }, []);
+
+  // ── Keyboard shortcuts ────────────────────────────────────────────
+  useEffect(() => {
+    if (Platform.OS !== 'web') return;
+    function handleKeyDown(e: KeyboardEvent) {
+      const target = e.target as HTMLElement;
+      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return;
+
+      if ((e.metaKey || e.ctrlKey) && e.key === 'f') {
+        e.preventDefault();
+        setShowSearch((v) => { if (!v) setTimeout(() => searchInputRef.current?.focus(), 50); return !v; });
+      } else if (e.key === ' ') {
+        e.preventDefault();
+        tts.handlePlayPauseRef.current();
+      } else if (e.key === 'ArrowRight' || e.key === 'ArrowDown') nextPage();
+      else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') prevPage();
+      else if (e.key === '?') setShowShortcuts((v) => !v);
+      else if (e.key === 'Escape') { hlState.setSelectionPopup(null); setShowSearch(false); setShowShortcuts(false); hlState.setShowDict(false); }
+    }
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
+  // ── ePub-specific helpers ─────────────────────────────────────────
 
   function getIframeDocument(): Document | null {
     const rendition = renditionRef.current;
@@ -360,15 +246,6 @@ export default function ReaderScreen() {
     return allWords;
   }
 
-  /**
-   * Listen for text selection inside the epub.js iframe.
-   * When the user selects text and releases the mouse, we show a highlight popup.
-   */
-  /**
-   * Handle a click on a word span — start TTS from that word.
-   * We distinguish clicks from drags: a click has a collapsed (empty) selection.
-   */
-  // Clean up old iframe listeners before attaching new ones
   function cleanupIframeListeners() {
     for (const entry of iframeListenersRef.current) {
       try { entry.doc.removeEventListener(entry.type, entry.handler); } catch {}
@@ -387,27 +264,24 @@ export default function ReaderScreen() {
       const ttsIdx = target.getAttribute?.('data-tts-idx');
       if (ttsIdx === null || ttsIdx === undefined) return;
 
-      // Only treat as a word click if there's no text selection (not a drag)
       const selection = doc.getSelection();
       if (selection && !selection.isCollapsed && selection.toString().trim().length > 1) {
-        return; // User is selecting text, don't start audio
+        return;
       }
 
       const wordIndex = parseInt(ttsIdx, 10);
       if (isNaN(wordIndex)) return;
 
-      // Stop any current playback and start from this word
       stopSpeaking();
-      resumeWordIndexRef.current = wordIndex;
-      setCurrentWordIndex(wordIndex);
-      startTTSFromWordRef.current(wordIndex, ttsSpeedRef.current);
+      tts.resumeWordIndexRef.current = wordIndex;
+      tts.setCurrentWordIndex(wordIndex);
+      tts.startTTSFromWordRef.current(wordIndex, tts.ttsSpeedRef.current);
     };
     addIframeListener(doc, 'click', handler);
   }
 
   function setupSelectionListener(doc: Document) {
     const handler = () => {
-      // Small delay to let the browser finalize the selection
       setTimeout(() => {
         const selection = doc.getSelection();
         if (!selection || selection.isCollapsed || !selection.toString().trim()) {
@@ -417,15 +291,12 @@ export default function ReaderScreen() {
         const text = selection.toString().trim();
         if (text.length < 2) return;
 
-        // Get position for the popup — use the bounding rect of the selection
         const range = selection.getRangeAt(0);
         const rect = range.getBoundingClientRect();
 
-        // The iframe is inside our page, so we need to offset by the iframe's position
         const iframe = viewerRef.current?.querySelector('iframe');
         const iframeRect = iframe?.getBoundingClientRect() || { left: 0, top: 0 };
 
-        // Clamp popup within viewport
         const popupWidth = 280;
         const popupHeight = 220;
         const rawX = iframeRect.left + rect.left + rect.width / 2;
@@ -433,35 +304,58 @@ export default function ReaderScreen() {
         const clampedX = Math.max(popupWidth / 2 + 8, Math.min(window.innerWidth - popupWidth / 2 - 8, rawX));
         const clampedY = Math.max(8, Math.min(window.innerHeight - popupHeight - 8, rawY));
 
-        setSelectionPopup({
+        hlState.setSelectionPopup({
           x: clampedX,
           y: clampedY,
           selectedText: text,
           range: range.cloneRange(),
         });
-        setPopupPos(null); // Reset drag offset
-        setNoteText('');
-        setSelectedColor('yellow');
+        hlState.setPopupPos(null);
+        hlState.setNoteText('');
+        hlState.setSelectedColor('yellow');
       }, 10);
     };
     addIframeListener(doc, 'mouseup', handler);
   }
 
-  /**
-   * Apply a visual highlight to the selected text in the iframe.
-   */
+  function setupDblClickListener(doc: Document) {
+    const handler = (e: MouseEvent) => {
+      const selection = doc.getSelection();
+      if (!selection || selection.isCollapsed) return;
+      const word = selection.toString().trim();
+      if (!word || word.includes(' ') || word.length > 30) return;
+
+      const range = selection.getRangeAt(0);
+      const rect = range.getBoundingClientRect();
+      const iframe = viewerRef.current?.querySelector('iframe');
+      const iframeRect = iframe?.getBoundingClientRect() || { left: 0, top: 0 };
+
+      const popupWidth = 280;
+      const rawX = iframeRect.left + rect.left + rect.width / 2;
+      const rawY = iframeRect.top + rect.bottom + 8;
+      const clampedX = Math.max(popupWidth / 2 + 8, Math.min(window.innerWidth - popupWidth / 2 - 8, rawX));
+      const clampedY = Math.max(8, Math.min(window.innerHeight - 300, rawY));
+
+      hlState.setSelectionPopup({ x: clampedX, y: clampedY, selectedText: word, range: range.cloneRange() });
+      hlState.setPopupPos(null);
+      hlState.setNoteText('');
+      hlState.setSelectedColor('yellow');
+      hlState.handleDefine(word);
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    addIframeListener(doc, 'dblclick', handler);
+  }
+
   function applyHighlightToRange(range: Range, color: HighlightColor) {
     const iframeDoc = getIframeDocument();
     if (!iframeDoc || !range) return;
 
     try {
-      // Use surroundContents for simple selections, or walk for complex ones
       const span = iframeDoc.createElement('span');
       span.className = `user-highlight-${color}`;
       range.surroundContents(span);
     } catch (e) {
-      // surroundContents fails if selection crosses element boundaries
-      // Fallback: highlight word spans that intersect the selection range
       const container = range.commonAncestorContainer;
       const parent = container.nodeType === 3 ? container.parentElement : container as Element;
       if (parent && iframeDoc) {
@@ -470,7 +364,6 @@ export default function ReaderScreen() {
           try {
             const spanRange = iframeDoc.createRange();
             spanRange.selectNodeContents(span);
-            // Check if this span's range intersects the selection range
             const intersects =
               range.compareBoundaryPoints(Range.START_TO_END, spanRange) > 0 &&
               range.compareBoundaryPoints(Range.END_TO_START, spanRange) < 0;
@@ -484,292 +377,22 @@ export default function ReaderScreen() {
   }
 
   function saveHighlight() {
-    if (!selectionPopup) return;
-
-    const highlight: Highlight = {
-      id: highlightIdRef.current++,
-      selectedText: selectionPopup.selectedText,
-      note: noteText,
-      color: selectedColor,
+    if (!hlState.selectionPopup) return;
+    hlState.addHighlight({
+      selectedText: hlState.selectionPopup.selectedText,
+      note: hlState.noteText,
+      color: hlState.selectedColor,
       pageInfo: locationInfo,
       cfiRange: currentCfiRef.current,
       createdAt: new Date().toLocaleTimeString(),
-    };
-
-    setHighlights((prev) => [...prev, highlight]);
-    showToast('Highlight saved');
-
-    // Apply visual highlight in the iframe
-    if (selectionPopup.range) {
-      applyHighlightToRange(selectionPopup.range, selectedColor);
+    });
+    if (hlState.selectionPopup.range) {
+      applyHighlightToRange(hlState.selectionPopup.range, hlState.selectedColor);
     }
-
-    // Clear selection
     const iframeDoc = getIframeDocument();
-    if (iframeDoc) {
-      iframeDoc.getSelection()?.removeAllRanges();
-    }
-
-    setSelectionPopup(null);
-    setNoteText('');
-  }
-
-  function removeHighlight(id: number) {
-    setHighlights((prev) => prev.filter((h) => h.id !== id));
-  }
-
-  function startEditNote(highlight: Highlight) {
-    setEditingHighlightId(highlight.id);
-    setEditNoteText(highlight.note);
-  }
-
-  function saveEditNote() {
-    if (editingHighlightId === null) return;
-    setHighlights((prev) =>
-      prev.map((h) =>
-        h.id === editingHighlightId ? { ...h, note: editNoteText } : h
-      )
-    );
-    setEditingHighlightId(null);
-    setEditNoteText('');
-  }
-
-  async function loadBook() {
-    try {
-      // Fetch book metadata to get filename, then load the file from server
-      const allBooks = await fetchBooks();
-      const bookMeta = allBooks.find((b) => b.id === bookId);
-      if (!bookMeta) {
-        setError('Book not found');
-        setIsLoading(false);
-        return;
-      }
-      setBookTitle(bookMeta.title);
-      setBookMeta(bookMeta);
-
-      // PDF books use a separate reader component
-      if (bookMeta.format === 'pdf') {
-        setIsLoading(false);
-        return;
-      }
-
-      const bookUrl = getBookUrl(bookMeta.filename);
-      const response = await fetch(bookUrl);
-      const arrayBuffer = await response.arrayBuffer();
-
-      const ePub = (await import('epubjs')).default;
-      const book = ePub(arrayBuffer as any);
-      bookRef.current = book;
-
-      if (!viewerRef.current) {
-        setError('Reader container not found');
-        return;
-      }
-
-      const rendition = book.renderTo(viewerRef.current, {
-        width: '100%',
-        height: '100%',
-        flow: 'paginated',
-        spread: 'none',
-      });
-
-      renditionRef.current = rendition;
-
-      rendition.hooks.content.register((contents: any) => {
-        try {
-          const doc = contents.document;
-          if (doc) {
-            // Fix #1: Clean up old iframe listeners before adding new ones
-            cleanupIframeListeners();
-
-            const words = injectWordSpans(doc);
-            iframeWordsArrayRef.current = words;
-            iframeWordsRef.current = words.join(' ');
-            setWordsReady(words.length > 0);
-            resumeWordIndexRef.current = -1;
-            prevHighlightRef.current = null;
-
-            // Apply current theme to new page content
-            const t = themes[activeThemeRef.current];
-            const sz = fontSizeRef.current;
-            let themeStyle = doc.getElementById('reader-theme');
-            if (!themeStyle) {
-              themeStyle = doc.createElement('style');
-              themeStyle.id = 'reader-theme';
-              doc.head.appendChild(themeStyle);
-            }
-            themeStyle.textContent = `
-              body { background-color: ${t.bg} !important; color: ${t.text} !important; font-size: ${sz}% !important; ${t.fontWeight ? `font-weight: ${t.fontWeight} !important;` : ''} ${t.fontFamily ? `font-family: ${t.fontFamily} !important;` : ''} }
-              p, span, div, li, td, th, h1, h2, h3, h4, h5, h6, a, blockquote { color: ${t.text} !important; ${t.fontWeight ? `font-weight: ${t.fontWeight} !important;` : ''} ${t.fontFamily ? `font-family: ${t.fontFamily} !important;` : ''} }
-              img, svg, figure, table { border-radius: 4px; }
-              figure, table, .figure, [class*="figure"] { background-color: ${t.bg} !important; }
-              td, th { background-color: ${t.bg} !important; border-color: ${t.text}33 !important; }
-            `;
-
-            // Listen for text selection and word clicks in the iframe
-            setupSelectionListener(doc);
-            setupWordClickListener(doc);
-
-            // Fix #6: Re-apply saved highlights to this page's word spans
-            const currentHighlights = highlightsRef.current;
-            if (currentHighlights.length > 0 && words.length > 0) {
-              const pageText = words.join(' ').toLowerCase();
-              for (const h of currentHighlights) {
-                const hLower = h.selectedText.toLowerCase();
-                if (pageText.includes(hLower)) {
-                  // Find matching word spans and apply highlight class
-                  const hWords = h.selectedText.split(/\s+/);
-                  for (let i = 0; i <= words.length - hWords.length; i++) {
-                    const match = hWords.every((hw, j) =>
-                      words[i + j].toLowerCase() === hw.toLowerCase()
-                    );
-                    if (match) {
-                      for (let j = 0; j < hWords.length; j++) {
-                        const span = doc.querySelector(`[data-tts-idx="${i + j}"]`);
-                        if (span) (span as HTMLElement).classList.add(`user-highlight-${h.color}`);
-                      }
-                      break;
-                    }
-                  }
-                }
-              }
-            }
-
-            // Auto-continue TTS on new page if it was playing
-            if (isPlayingRef.current) {
-              setTimeout(() => {
-                startTTSFromWordRef.current(0, ttsSpeedRef.current);
-              }, 100);
-            }
-          }
-        } catch (e) {
-          console.warn('Failed to inject word spans:', e);
-        }
-      });
-
-      // Restore saved reading position, or start from beginning
-      const savedPosition = localStorage.getItem(storageKey('position'));
-      await rendition.display(savedPosition || undefined);
-
-      // Extract table of contents
-      const navigation = await book.loaded.navigation;
-      if (navigation?.toc) {
-        const items: { label: string; href: string; level: number }[] = [];
-        function flattenToc(tocList: any[], level: number) {
-          for (const item of tocList) {
-            items.push({
-              label: item.label?.trim() || 'Untitled',
-              href: item.href,
-              level,
-            });
-            if (item.subitems?.length) flattenToc(item.subitems, level + 1);
-          }
-        }
-        flattenToc(navigation.toc, 0);
-        setTocItems(items);
-      }
-
-      rendition.on('relocated', (location: any) => {
-        setSelectionPopup(null);
-        // Track last-read book and progress for library UI
-        localStorage.setItem('reader-lastReadId', bookId!);
-        localStorage.setItem('reader-lastReadTime', String(Date.now()));
-        const current = location.start?.displayed;
-        if (current) {
-          setCurrentPage(current.page);
-          setTotalPages(current.total);
-          setLocationInfo(`${current.page} / ${current.total}`);
-          setPagesLeftInChapter(current.total - current.page);
-        }
-        if (location.start?.cfi) {
-          currentCfiRef.current = location.start.cfi;
-          localStorage.setItem(storageKey('position'), location.start.cfi);
-        }
-        if (location.start?.percentage != null) {
-          setBookProgress(location.start.percentage);
-          localStorage.setItem(storageKey('progress'), String(location.start.percentage));
-        }
-      });
-
-      // Generate locations for overall book progress percentage
-      book.locations.generate(1024);
-
-      setIsLoading(false);
-    } catch (e: any) {
-      setError(e.message || 'Failed to load book');
-      setIsLoading(false);
-    }
-  }
-
-  // --- TTS functions ---
-
-  function startTTSFromWord(fromWordIndex: number, rate: number) {
-    const allWords = iframeWordsArrayRef.current;
-    if (allWords.length === 0) return;
-    const textFromWord = allWords.slice(fromWordIndex).join(' ');
-    if (!textFromWord) return;
-
-    const gen = ++ttsGenRef.current;
-    setIsPlaying(true);
-    speakText(textFromWord, rate, {
-      onEnd: () => {
-        if (ttsGenRef.current !== gen) return; // stale callback from old utterance
-        setIsPlaying(false);
-        setCurrentWordIndex(-1);
-        resumeWordIndexRef.current = -1;
-        clearTTSHighlight();
-      },
-      onWord: (wordIndex: number) => {
-        if (ttsGenRef.current !== gen) return;
-        setCurrentWordIndex(wordIndex + fromWordIndex);
-      },
-      onError: (err: string) => {
-        if (ttsGenRef.current !== gen) return;
-        setIsPlaying(false);
-        clearTTSHighlight();
-      },
-    }, selectedVoiceRef.current);
-  }
-
-  // Keep ref in sync so iframe click handlers can call the latest version
-  startTTSFromWordRef.current = startTTSFromWord;
-
-  function handlePlay() {
-    if (!iframeWordsRef.current) return;
-    const startFrom = resumeWordIndexRef.current >= 0 ? resumeWordIndexRef.current : 0;
-    setCurrentWordIndex(startFrom);
-    startTTSFromWord(startFrom, ttsSpeed);
-  }
-
-  function handlePlayPause() {
-    // Use speechSynthesis state directly (not React state) to avoid stale closures
-    if (window.speechSynthesis.speaking && !window.speechSynthesis.paused) {
-      pauseSpeaking();
-      setIsPlaying(false);
-    } else if (window.speechSynthesis.paused) {
-      resumeSpeaking();
-      setIsPlaying(true);
-    } else {
-      handlePlay();
-    }
-  }
-
-  handlePlayPauseRef.current = handlePlayPause;
-
-  function handleStop() {
-    const idx = currentWordIndexRef.current;
-    resumeWordIndexRef.current = idx >= 0 ? idx : -1;
-    stopSpeaking();
-    setIsPlaying(false);
-    setCurrentWordIndex(-1);
-    clearTTSHighlight();
-  }
-
-  function clearTTSHighlight() {
-    if (prevHighlightRef.current) {
-      prevHighlightRef.current.classList.remove('tts-active');
-      prevHighlightRef.current = null;
-    }
+    if (iframeDoc) iframeDoc.getSelection()?.removeAllRanges();
+    hlState.setSelectionPopup(null);
+    hlState.setNoteText('');
   }
 
   function applyThemeToIframe(themeName: ThemeName, size: number) {
@@ -821,49 +444,11 @@ export default function ReaderScreen() {
     applyThemeToIframe(activeTheme, newSize);
   }
 
-  function toggleBookmark() {
-    const existing = bookmarks.find((b) => b.page === currentPage);
-    if (existing) {
-      setBookmarks((prev) => prev.filter((b) => b.id !== existing.id));
-      showToast('Bookmark removed');
-    } else {
-      const newId = bookmarkIdRef.current++;
-      setBookmarks((prev) => [
-        ...prev,
-        {
-          id: newId,
-          page: currentPage,
-          label: '',
-          cfi: currentCfiRef.current,
-        },
-      ]);
-      // Open bookmarks panel and start editing the new bookmark's title
-      setShowBookmarks(true);
-      setShowToc(false);
-      setShowSidebar(false);
-      setEditingBookmarkId(newId);
-      setBookmarkTitleInput('');
-    }
-  }
-
-  function saveBookmarkTitle(id: number) {
-    setBookmarks((prev) =>
-      prev.map((b) => b.id === id ? { ...b, label: bookmarkTitleInput.trim() } : b)
-    );
-    setEditingBookmarkId(null);
-    setBookmarkTitleInput('');
-  }
-
   function navigateToBookmark(cfi: string) {
     if (renditionRef.current && cfi) {
       renditionRef.current.display(cfi);
-      setShowBookmarks(false);
+      bmState.setShowBookmarks(false);
     }
-  }
-
-  function removeBookmark(id: number) {
-    setBookmarks((prev) => prev.filter((b) => b.id !== id));
-    if (editingBookmarkId === id) setEditingBookmarkId(null);
   }
 
   function navigateToChapter(href: string) {
@@ -873,7 +458,7 @@ export default function ReaderScreen() {
     }
   }
 
-  // Search within book (with cancellation)
+  // Search within book (ePub-specific spine search)
   async function handleSearch(query: string) {
     if (!bookRef.current || !query.trim()) {
       setSearchResults([]);
@@ -884,7 +469,7 @@ export default function ReaderScreen() {
     try {
       const book = bookRef.current;
       await book.ready;
-      const results: { cfi: string; excerpt: string }[] = [];
+      const results: { cfi?: string; excerpt: string }[] = [];
       const spineItems: any[] = [];
       book.spine.each((item: any) => spineItems.push(item));
 
@@ -908,39 +493,6 @@ export default function ReaderScreen() {
     setIsSearching(false);
   }
 
-  // Export highlights & notes as text
-  function exportHighlights() {
-    if (highlights.length === 0) return;
-    const lines = highlights.map((h, i) => {
-      let line = `${i + 1}. "${h.selectedText}"`;
-      if (h.note) line += `\n   Note: ${h.note}`;
-      line += `\n   Color: ${h.color} | Page: ${h.pageInfo} | ${h.createdAt}`;
-      return line;
-    });
-    const text = `Highlights & Notes\n${'='.repeat(40)}\n\n${lines.join('\n\n')}`;
-    const blob = new Blob([text], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `highlights-${bookId}.txt`;
-    a.click();
-    URL.revokeObjectURL(url);
-  }
-
-  function handleSpeedInputSubmit() {
-    const val = parseFloat(speedInput);
-    if (!isNaN(val) && val >= 0.5 && val <= 3) {
-      setTtsSpeed(val);
-      if (isPlaying) {
-        const resumeFrom = currentWordIndex >= 0 ? currentWordIndex : 0;
-        stopSpeaking();
-        startTTSFromWord(resumeFrom, val);
-      }
-    }
-    setIsEditingSpeed(false);
-    setSpeedInput('');
-  }
-
   function nextPage() {
     if (renditionRef.current) renditionRef.current.next();
   }
@@ -953,17 +505,10 @@ export default function ReaderScreen() {
     const rendition = renditionRef.current;
     const book = bookRef.current;
     if (!rendition || !book) return;
-
-    // epub.js doesn't have a direct "go to page N" — pages are virtual.
-    // We calculate a percentage through the book based on the page number
-    // and use book.locations or rendition.display with a percentage.
     const clamped = Math.max(1, Math.min(page, totalPages));
     const percentage = (clamped - 1) / totalPages;
-
-    // Use the spine: find the right position based on percentage
     const spine = book.spine;
     if (spine && spine.items && spine.items.length > 0) {
-      // Calculate which spine item and position
       rendition.display(percentage);
     }
   }
@@ -977,54 +522,197 @@ export default function ReaderScreen() {
     setPageInput('');
   }
 
-  useEffect(() => {
-    if (Platform.OS !== 'web') return;
-    function handleKeyDown(e: KeyboardEvent) {
-      // Don't intercept arrow keys when typing in the page input
-      const target = e.target as HTMLElement;
-      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return;
+  // ── Load ePub book ────────────────────────────────────────────────
+  async function loadBook() {
+    try {
+      const allBooks = await fetchBooks();
+      const meta = allBooks.find((b) => b.id === bookId);
+      if (!meta) {
+        setError('Book not found');
+        setIsLoading(false);
+        return;
+      }
+      setBookTitle(meta.title);
+      setBookMeta(meta);
 
-      if ((e.metaKey || e.ctrlKey) && e.key === 'f') {
-        e.preventDefault();
-        setShowSearch((v) => { if (!v) setTimeout(() => searchInputRef.current?.focus(), 50); return !v; });
-      } else if (e.key === ' ') {
-        e.preventDefault();
-        handlePlayPauseRef.current();
-      } else if (e.key === 'ArrowRight' || e.key === 'ArrowDown') nextPage();
-      else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') prevPage();
-      else if (e.key === '?') setShowShortcuts((v) => !v);
-      else if (e.key === 'Escape') { setSelectionPopup(null); setShowSearch(false); setShowShortcuts(false); }
+      // PDF books use a separate reader component
+      if (meta.format === 'pdf') {
+        setIsLoading(false);
+        return;
+      }
+
+      const bookUrl = getBookUrl(meta.filename);
+      const response = await fetch(bookUrl);
+      const arrayBuffer = await response.arrayBuffer();
+
+      const ePub = (await import('epubjs')).default;
+      const book = ePub(arrayBuffer as any);
+      bookRef.current = book;
+
+      if (!viewerRef.current) {
+        setError('Reader container not found');
+        return;
+      }
+
+      const rendition = book.renderTo(viewerRef.current, {
+        width: '100%',
+        height: '100%',
+        flow: 'paginated',
+        spread: 'none',
+      });
+
+      renditionRef.current = rendition;
+
+      rendition.hooks.content.register((contents: any) => {
+        try {
+          const doc = contents.document;
+          if (doc) {
+            cleanupIframeListeners();
+
+            const words = injectWordSpans(doc);
+            iframeWordsArrayRef.current = words;
+            iframeWordsRef.current = words.join(' ');
+            setWordsReady(words.length > 0);
+            tts.resumeWordIndexRef.current = -1;
+            prevHighlightRef.current = null;
+
+            // Apply current theme to new page content
+            const t = themes[activeThemeRef.current];
+            const sz = fontSizeRef.current;
+            let themeStyle = doc.getElementById('reader-theme');
+            if (!themeStyle) {
+              themeStyle = doc.createElement('style');
+              themeStyle.id = 'reader-theme';
+              doc.head.appendChild(themeStyle);
+            }
+            themeStyle.textContent = `
+              body { background-color: ${t.bg} !important; color: ${t.text} !important; font-size: ${sz}% !important; ${t.fontWeight ? `font-weight: ${t.fontWeight} !important;` : ''} ${t.fontFamily ? `font-family: ${t.fontFamily} !important;` : ''} }
+              p, span, div, li, td, th, h1, h2, h3, h4, h5, h6, a, blockquote { color: ${t.text} !important; ${t.fontWeight ? `font-weight: ${t.fontWeight} !important;` : ''} ${t.fontFamily ? `font-family: ${t.fontFamily} !important;` : ''} }
+              img, svg, figure, table { border-radius: 4px; }
+              figure, table, .figure, [class*="figure"] { background-color: ${t.bg} !important; }
+              td, th { background-color: ${t.bg} !important; border-color: ${t.text}33 !important; }
+            `;
+
+            // Listen for text selection and word clicks in the iframe
+            setupSelectionListener(doc);
+            setupWordClickListener(doc);
+            setupDblClickListener(doc);
+
+            // Re-apply saved highlights to this page's word spans
+            const currentHighlights = hlState.highlightsRef.current;
+            if (currentHighlights.length > 0 && words.length > 0) {
+              const pageText = words.join(' ').toLowerCase();
+              for (const h of currentHighlights) {
+                const hLower = h.selectedText.toLowerCase();
+                if (pageText.includes(hLower)) {
+                  const hWords = h.selectedText.split(/\s+/);
+                  for (let i = 0; i <= words.length - hWords.length; i++) {
+                    const match = hWords.every((hw, j) =>
+                      words[i + j].toLowerCase() === hw.toLowerCase()
+                    );
+                    if (match) {
+                      for (let j = 0; j < hWords.length; j++) {
+                        const span = doc.querySelector(`[data-tts-idx="${i + j}"]`);
+                        if (span) (span as HTMLElement).classList.add(`user-highlight-${h.color}`);
+                      }
+                      break;
+                    }
+                  }
+                }
+              }
+            }
+
+            // Auto-continue TTS on new page if it was playing
+            if (tts.isPlayingRef.current) {
+              setTimeout(() => {
+                tts.startTTSFromWordRef.current(0, tts.ttsSpeedRef.current);
+              }, 100);
+            }
+          }
+        } catch (e) {
+          console.warn('Failed to inject word spans:', e);
+        }
+      });
+
+      // Restore saved reading position, or start from beginning
+      const savedPosition = localStorage.getItem(`reader-${bookId}-position`);
+      await rendition.display(savedPosition || undefined);
+
+      // Extract table of contents
+      const navigation = await book.loaded.navigation;
+      if (navigation?.toc) {
+        const items: { label: string; href: string; level: number }[] = [];
+        function flattenToc(tocList: any[], level: number) {
+          for (const item of tocList) {
+            items.push({
+              label: item.label?.trim() || 'Untitled',
+              href: item.href,
+              level,
+            });
+            if (item.subitems?.length) flattenToc(item.subitems, level + 1);
+          }
+        }
+        flattenToc(navigation.toc, 0);
+        setTocItems(items);
+      }
+
+      // Auto-generate TOC if none found by scanning spine for headings
+      if (!navigation?.toc?.length) {
+        const autoToc: { label: string; href: string; level: number }[] = [];
+        const spineItems: any[] = [];
+        book.spine.each((item: any) => spineItems.push(item));
+        for (const item of spineItems) {
+          try {
+            await item.load(book.load.bind(book));
+            const doc = item.document || (typeof DOMParser !== 'undefined' && new DOMParser().parseFromString(item.contents || '', 'text/html'));
+            if (doc) {
+              const headings = doc.querySelectorAll('h1, h2, h3, h4');
+              headings.forEach((h: Element) => {
+                const text = h.textContent?.trim();
+                if (text && text.length > 1) {
+                  const tag = h.tagName.toLowerCase();
+                  const level = tag === 'h1' ? 0 : tag === 'h2' ? 1 : tag === 'h3' ? 2 : 3;
+                  autoToc.push({ label: text, href: item.href, level });
+                }
+              });
+            }
+            item.unload();
+          } catch {}
+        }
+        if (autoToc.length > 0) setTocItems(autoToc);
+      }
+
+      rendition.on('relocated', (location: any) => {
+        hlState.setSelectionPopup(null);
+        // Track last-read book and progress for library UI
+        localStorage.setItem('reader-lastReadId', bookId!);
+        localStorage.setItem('reader-lastReadTime', String(Date.now()));
+        const current = location.start?.displayed;
+        if (current) {
+          setCurrentPage(current.page);
+          setTotalPages(current.total);
+          setLocationInfo(`${current.page} / ${current.total}`);
+          setPagesLeftInChapter(current.total - current.page);
+        }
+        if (location.start?.cfi) {
+          currentCfiRef.current = location.start.cfi;
+          localStorage.setItem(`reader-${bookId}-position`, location.start.cfi);
+        }
+        if (location.start?.percentage != null) {
+          setBookProgress(location.start.percentage);
+          localStorage.setItem(`reader-${bookId}-progress`, String(location.start.percentage));
+        }
+      });
+
+      // Generate locations for overall book progress percentage
+      book.locations.generate(1024);
+
+      setIsLoading(false);
+    } catch (e: any) {
+      setError(e.message || 'Failed to load book');
+      setIsLoading(false);
     }
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
-
-  // Close popup when clicking outside
-  useEffect(() => {
-    if (!selectionPopup) return;
-    function handleClick(e: MouseEvent) {
-      const target = e.target as HTMLElement;
-      if (target.closest('[data-popup]')) return;
-      setSelectionPopup(null);
-    }
-    // Delay to avoid catching the mouseup that opened the popup
-    const timer = setTimeout(() => {
-      window.addEventListener('click', handleClick);
-    }, 100);
-    return () => {
-      clearTimeout(timer);
-      window.removeEventListener('click', handleClick);
-    };
-  }, [selectionPopup]);
-
-  // Theme-aware panel overrides
-  const themeColors = themes[activeTheme];
-  const panelTheme: React.CSSProperties = {
-    backgroundColor: themeColors.bg,
-    color: themeColors.text,
-    borderColor: activeTheme === 'quiet' ? '#555' : '#e8e8e8',
-  };
-  const panelBorder = activeTheme === 'quiet' ? '#555' : '#f0f0f0';
+  }
 
   // --- Web rendering ---
   // PDF books use a dedicated reader component
@@ -1065,7 +753,7 @@ export default function ReaderScreen() {
             </button>
             {/* TOC — list icon */}
             <button
-              onClick={() => { setShowToc(!showToc); if (!showToc) { setShowSidebar(false); setShowBookmarks(false); } }}
+              onClick={() => { setShowToc(!showToc); if (!showToc) { hlState.setShowHighlights(false); bmState.setShowBookmarks(false); } }}
               style={{
                 ...webStyles.iconButton,
                 color: showToc ? '#2f95dc' : '#555',
@@ -1080,12 +768,12 @@ export default function ReaderScreen() {
             </button>
             {/* Highlights & Notes — notes icon */}
             <button
-              onClick={() => { setShowSidebar(!showSidebar); if (!showSidebar) { setShowToc(false); setShowBookmarks(false); } }}
+              onClick={() => { hlState.setShowHighlights(!hlState.showHighlights); if (!hlState.showHighlights) { setShowToc(false); bmState.setShowBookmarks(false); } }}
               style={{
                 ...webStyles.iconButton,
-                color: showSidebar ? '#2f95dc' : '#555',
+                color: hlState.showHighlights ? '#2f95dc' : '#555',
               }}
-              title={`Highlights & Notes (${highlights.length})`}
+              title={`Highlights & Notes (${hlState.highlights.length})`}
             >
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
                 <rect x="3" y="3" width="18" height="18" rx="2" />
@@ -1115,7 +803,7 @@ export default function ReaderScreen() {
             </button>
             {/* Themes & Settings */}
             <button
-              onClick={() => { setShowThemes(!showThemes); if (!showThemes) { setShowToc(false); setShowSidebar(false); setShowBookmarks(false); } }}
+              onClick={() => { setShowThemes(!showThemes); if (!showThemes) { setShowToc(false); hlState.setShowHighlights(false); bmState.setShowBookmarks(false); } }}
               style={{
                 ...webStyles.iconButton,
                 color: showThemes ? '#2f95dc' : '#555',
@@ -1128,14 +816,14 @@ export default function ReaderScreen() {
             </button>
             {/* Bookmark current page (click) / Open bookmarks list (long press area) */}
             <button
-              onClick={() => { setShowBookmarks(!showBookmarks); if (!showBookmarks) { setShowToc(false); setShowSidebar(false); } }}
+              onClick={() => { bmState.setShowBookmarks(!bmState.showBookmarks); if (!bmState.showBookmarks) { setShowToc(false); hlState.setShowHighlights(false); } }}
               style={{
                 ...webStyles.iconButton,
-                color: showBookmarks ? '#2f95dc' : (bookmarks.some((b) => b.page === currentPage) ? '#2f95dc' : '#555'),
+                color: bmState.showBookmarks ? '#2f95dc' : (bmState.bookmarks.some((b) => b.page === currentPage) ? '#2f95dc' : '#555'),
               }}
-              title={`Bookmarks (${bookmarks.length})`}
+              title={`Bookmarks (${bmState.bookmarks.length})`}
             >
-              <svg width="20" height="20" viewBox="0 0 24 24" fill={bookmarks.some((b) => b.page === currentPage) ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" strokeLinejoin="round">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill={bmState.bookmarks.some((b) => b.page === currentPage) ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" strokeLinejoin="round">
                 <path d="M6 4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18l-6-4-6 4V4z" />
               </svg>
             </button>
@@ -1231,7 +919,7 @@ export default function ReaderScreen() {
                   <button
                     key={i}
                     onClick={() => {
-                      if (renditionRef.current) renditionRef.current.display(r.cfi);
+                      if (renditionRef.current && r.cfi) renditionRef.current.display(r.cfi);
                     }}
                     style={webStyles.tocItem}
                   >
@@ -1282,32 +970,32 @@ export default function ReaderScreen() {
         )}
 
         {/* Bookmarks dropdown */}
-        {showBookmarks && (
+        {bmState.showBookmarks && (
           <div style={{ ...webStyles.bookmarksDropdown, ...panelTheme }}>
             <div style={webStyles.tocHeader}>
               <strong>Bookmarks</strong>
               <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
                 <button
-                  onClick={toggleBookmark}
+                  onClick={bmState.toggleBookmark}
                   style={{
                     ...webStyles.iconButtonSmall,
-                    color: bookmarks.some((b) => b.page === currentPage) ? '#2f95dc' : undefined,
+                    color: bmState.bookmarks.some((b) => b.page === currentPage) ? '#2f95dc' : undefined,
                   }}
-                  title={bookmarks.some((b) => b.page === currentPage) ? 'Remove bookmark' : 'Bookmark this page'}
+                  title={bmState.bookmarks.some((b) => b.page === currentPage) ? 'Remove bookmark' : 'Bookmark this page'}
                 >
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill={bookmarks.some((b) => b.page === currentPage) ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" strokeLinejoin="round">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill={bmState.bookmarks.some((b) => b.page === currentPage) ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" strokeLinejoin="round">
                     <path d="M6 4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18l-6-4-6 4V4z" />
                   </svg>
                 </button>
                 <button
-                  onClick={() => setShowBookmarks(false)}
+                  onClick={() => bmState.setShowBookmarks(false)}
                   style={webStyles.iconButtonSmall}
                 >
                   {'\u2715'}
                 </button>
               </div>
             </div>
-            {bookmarks.length === 0 ? (
+            {bmState.bookmarks.length === 0 ? (
               <div style={webStyles.bookmarksEmpty}>
                 <div style={{ fontWeight: 500, marginBottom: '4px' }}>No Bookmarks</div>
                 <div style={{ fontSize: '12px', opacity: 0.6 }}>
@@ -1316,21 +1004,21 @@ export default function ReaderScreen() {
               </div>
             ) : (
               <div style={webStyles.tocList}>
-                {bookmarks
+                {bmState.bookmarks
                   .sort((a, b) => a.page - b.page)
                   .map((b) => (
                     <div key={b.id} style={webStyles.bookmarkItem}>
-                      {editingBookmarkId === b.id ? (
+                      {bmState.editingBookmarkId === b.id ? (
                         <div style={{ flex: 1, padding: '8px 12px' }}>
                           <input
                             type="text"
-                            value={bookmarkTitleInput}
-                            onChange={(e) => setBookmarkTitleInput(e.target.value)}
+                            value={bmState.bookmarkTitleInput}
+                            onChange={(e) => bmState.setBookmarkTitleInput(e.target.value)}
                             onKeyDown={(e) => {
-                              if (e.key === 'Enter') saveBookmarkTitle(b.id);
-                              if (e.key === 'Escape') { setEditingBookmarkId(null); setBookmarkTitleInput(''); }
+                              if (e.key === 'Enter') bmState.saveBookmarkTitle(b.id);
+                              if (e.key === 'Escape') { bmState.setEditingBookmarkId(null); bmState.setBookmarkTitleInput(''); }
                             }}
-                            onBlur={() => saveBookmarkTitle(b.id)}
+                            onBlur={() => bmState.saveBookmarkTitle(b.id)}
                             placeholder="Bookmark title..."
                             autoFocus
                             style={webStyles.bookmarkTitleInput}
@@ -1338,7 +1026,7 @@ export default function ReaderScreen() {
                         </div>
                       ) : (
                         <button
-                          onClick={() => navigateToBookmark(b.cfi)}
+                          onClick={() => navigateToBookmark(b.cfi || '')}
                           style={webStyles.bookmarkLink}
                         >
                           <span>{b.label || 'Untitled'}</span>
@@ -1347,7 +1035,7 @@ export default function ReaderScreen() {
                       )}
                       <div style={{ display: 'flex', alignItems: 'center', gap: '2px', paddingRight: '4px' }}>
                         <button
-                          onClick={() => { setEditingBookmarkId(b.id); setBookmarkTitleInput(b.label); }}
+                          onClick={() => { bmState.setEditingBookmarkId(b.id); bmState.setBookmarkTitleInput(b.label); }}
                           style={webStyles.iconButtonSmall}
                           title="Rename"
                         >
@@ -1356,7 +1044,7 @@ export default function ReaderScreen() {
                           </svg>
                         </button>
                         <button
-                          onClick={() => removeBookmark(b.id)}
+                          onClick={() => bmState.removeBookmark(b.id)}
                           style={webStyles.iconButtonSmall}
                           title="Remove bookmark"
                         >
@@ -1371,33 +1059,45 @@ export default function ReaderScreen() {
         )}
 
         {/* Highlights & Notes dropdown */}
-        {showSidebar && (
+        {hlState.showHighlights && (
           <div style={{ ...webStyles.highlightsDropdown, ...panelTheme }}>
             <div style={webStyles.tocHeader}>
               <strong>Highlights & Notes</strong>
               <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
-                {highlights.length > 0 && (
-                  <button
-                    onClick={exportHighlights}
-                    style={webStyles.iconButtonSmall}
-                    title="Export highlights"
-                  >
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                      <polyline points="7 10 12 15 17 10" />
-                      <line x1="12" y1="15" x2="12" y2="3" />
-                    </svg>
-                  </button>
+                {hlState.highlights.length > 0 && (
+                  <>
+                    <button
+                      onClick={hlState.handleDriveExport}
+                      disabled={hlState.isExportingDrive}
+                      style={{ ...webStyles.iconButtonSmall, opacity: hlState.isExportingDrive ? 0.4 : 1 }}
+                      title="Export Cornell Notes to Google Drive"
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M12 2L2 7l10 5 10-5-10-5z" /><path d="M2 17l10 5 10-5" /><path d="M2 12l10 5 10-5" />
+                      </svg>
+                    </button>
+                    <button
+                      onClick={hlState.exportHighlightsAsText}
+                      style={webStyles.iconButtonSmall}
+                      title="Export highlights as text file"
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                        <polyline points="7 10 12 15 17 10" />
+                        <line x1="12" y1="15" x2="12" y2="3" />
+                      </svg>
+                    </button>
+                  </>
                 )}
                 <button
-                  onClick={() => setShowSidebar(false)}
+                  onClick={() => hlState.setShowHighlights(false)}
                   style={webStyles.iconButtonSmall}
                 >
                   {'\u2715'}
                 </button>
               </div>
             </div>
-            {highlights.length === 0 ? (
+            {hlState.highlights.length === 0 ? (
               <div style={webStyles.bookmarksEmpty}>
                 <div style={{ fontWeight: 500, marginBottom: '4px' }}>No Highlights or Notes</div>
                 <div style={{ fontSize: '12px', opacity: 0.6 }}>
@@ -1406,7 +1106,7 @@ export default function ReaderScreen() {
               </div>
             ) : (
               <div style={webStyles.tocList}>
-                {highlights.map((h) => (
+                {hlState.highlights.map((h) => (
                   <div key={h.id} style={webStyles.highlightDropdownItem}>
                     {/* Color bar */}
                     <div
@@ -1434,24 +1134,24 @@ export default function ReaderScreen() {
                       </button>
 
                       {/* Note editing */}
-                      {editingHighlightId === h.id ? (
+                      {hlState.editingHighlightId === h.id ? (
                         <div style={{ padding: '0 12px 8px 12px' }}>
                           <textarea
-                            value={editNoteText}
-                            onChange={(e) => setEditNoteText(e.target.value)}
+                            value={hlState.editNoteText}
+                            onChange={(e) => hlState.setEditNoteText(e.target.value)}
                             style={webStyles.noteInput}
                             rows={2}
                             autoFocus
                           />
                           <div style={{ display: 'flex', gap: '6px', marginTop: '4px' }}>
                             <button
-                              onClick={() => setEditingHighlightId(null)}
+                              onClick={() => hlState.setEditingHighlightId(null)}
                               style={webStyles.popupButtonCancel}
                             >
                               Cancel
                             </button>
                             <button
-                              onClick={saveEditNote}
+                              onClick={hlState.saveEditNote}
                               style={webStyles.popupButtonSave}
                             >
                               Save
@@ -1480,13 +1180,13 @@ export default function ReaderScreen() {
                             <span>{h.pageInfo}</span>
                             <span>{'\u00B7'}</span>
                             <button
-                              onClick={() => startEditNote(h)}
+                              onClick={() => hlState.startEditNote(h)}
                               style={webStyles.sidebarAction}
                             >
                               {h.note ? 'Edit note' : 'Add note'}
                             </button>
                             <button
-                              onClick={() => removeHighlight(h.id)}
+                              onClick={() => hlState.removeHighlight(h.id)}
                               style={webStyles.sidebarAction}
                             >
                               Delete
@@ -1576,13 +1276,13 @@ export default function ReaderScreen() {
             <div style={webStyles.dragOverlay} />
           )}
 
-          {selectionPopup && (
+          {hlState.selectionPopup && (
             <div
               data-popup
               style={{
                 ...webStyles.selectionPopup,
-                left: popupPos ? popupPos.x : selectionPopup.x,
-                top: popupPos ? popupPos.y : selectionPopup.y,
+                left: hlState.popupPos ? hlState.popupPos.x : hlState.selectionPopup.x,
+                top: hlState.popupPos ? hlState.popupPos.y : hlState.selectionPopup.y,
                 ...panelTheme,
               }}
             >
@@ -1591,22 +1291,21 @@ export default function ReaderScreen() {
                 style={webStyles.popupDragHandle}
                 onMouseDown={(e) => {
                   e.preventDefault();
-                  const currentX = popupPos ? popupPos.x : selectionPopup.x;
-                  const currentY = popupPos ? popupPos.y : selectionPopup.y;
-                  popupDragRef.current = { startX: e.clientX, startY: e.clientY, origX: currentX, origY: currentY };
+                  const currentX = hlState.popupPos ? hlState.popupPos.x : hlState.selectionPopup!.x;
+                  const currentY = hlState.popupPos ? hlState.popupPos.y : hlState.selectionPopup!.y;
+                  hlState.popupDragRef.current = { startX: e.clientX, startY: e.clientY, origX: currentX, origY: currentY };
                   setIsDraggingPopup(true);
 
                   const onMove = (ev: MouseEvent) => {
-                    if (!popupDragRef.current) return;
-                    const dx = ev.clientX - popupDragRef.current.startX;
-                    const dy = ev.clientY - popupDragRef.current.startY;
-                    // Clamp within viewport bounds
-                    const newX = Math.max(8, Math.min(window.innerWidth - 288, popupDragRef.current.origX + dx));
-                    const newY = Math.max(8, Math.min(window.innerHeight - 280, popupDragRef.current.origY + dy));
-                    setPopupPos({ x: newX, y: newY });
+                    if (!hlState.popupDragRef.current) return;
+                    const dx = ev.clientX - hlState.popupDragRef.current.startX;
+                    const dy = ev.clientY - hlState.popupDragRef.current.startY;
+                    const newX = Math.max(8, Math.min(window.innerWidth - 288, hlState.popupDragRef.current.origX + dx));
+                    const newY = Math.max(8, Math.min(window.innerHeight - 280, hlState.popupDragRef.current.origY + dy));
+                    hlState.setPopupPos({ x: newX, y: newY });
                   };
                   const onUp = () => {
-                    popupDragRef.current = null;
+                    hlState.popupDragRef.current = null;
                     setIsDraggingPopup(false);
                     window.removeEventListener('mousemove', onMove);
                     window.removeEventListener('mouseup', onUp);
@@ -1622,39 +1321,114 @@ export default function ReaderScreen() {
                 {(Object.keys(HIGHLIGHT_COLORS) as HighlightColor[]).map((color) => (
                   <button
                     key={color}
-                    onClick={() => setSelectedColor(color)}
+                    onClick={() => hlState.setSelectedColor(color)}
                     style={{
                       width: '24px',
                       height: '24px',
                       borderRadius: '50%',
                       backgroundColor: HIGHLIGHT_COLORS[color],
-                      border: selectedColor === color ? '2px solid #333' : '2px solid transparent',
+                      border: hlState.selectedColor === color ? '2px solid #333' : '2px solid transparent',
                       cursor: 'pointer',
                     }}
                   />
                 ))}
               </div>
 
+              {/* Define & Thesaurus toggle for short selections */}
+              {hlState.selectionPopup.selectedText.split(/\s+/).length <= 3 && (
+                <button
+                  onClick={() => {
+                    if (hlState.showDict) { hlState.setShowDict(false); }
+                    else { hlState.handleDefine(hlState.selectionPopup!.selectedText.split(/\s+/)[0]); }
+                  }}
+                  style={{
+                    ...webStyles.popupButtonCancel,
+                    width: '100%', marginBottom: '8px',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
+                    backgroundColor: hlState.showDict ? '#2f95dc' : undefined,
+                    color: hlState.showDict ? '#fff' : undefined,
+                    borderColor: hlState.showDict ? '#2f95dc' : undefined,
+                  }}
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" /><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
+                  </svg>
+                  Define &amp; Thesaurus
+                </button>
+              )}
+
               {/* Selected text preview */}
               <div style={webStyles.popupPreview}>
-                "{selectionPopup.selectedText.length > 60
-                  ? selectionPopup.selectedText.slice(0, 60) + '...'
-                  : selectionPopup.selectedText}"
+                "{hlState.selectionPopup.selectedText.length > 60
+                  ? hlState.selectionPopup.selectedText.slice(0, 60) + '...'
+                  : hlState.selectionPopup.selectedText}"
               </div>
 
               {/* Note input */}
               <textarea
-                value={noteText}
-                onChange={(e) => setNoteText(e.target.value)}
+                value={hlState.noteText}
+                onChange={(e) => hlState.setNoteText(e.target.value)}
                 placeholder="Add a note (optional)..."
                 style={webStyles.noteInput}
                 rows={2}
               />
 
+              {/* Dictionary / Thesaurus inline section */}
+              {hlState.showDict && (
+                <div style={{ borderTop: '1px solid #e0e0e0', marginTop: '8px', paddingTop: '8px', maxHeight: '250px', overflow: 'auto' }}>
+                  {hlState.dictLoading && <div style={{ padding: '12px', textAlign: 'center', color: '#999', fontSize: '13px' }}>Looking up...</div>}
+                  {hlState.dictError && <div style={{ padding: '8px', color: '#c00', fontSize: '12px' }}>{hlState.dictError}</div>}
+                  {hlState.dictResult && (
+                    <>
+                      <div style={{ marginBottom: '8px' }}>
+                        <span style={{ fontSize: '16px', fontWeight: 700 }}>{hlState.dictResult.word}</span>
+                        {hlState.dictResult.phonetic && <span style={{ marginLeft: '6px', color: '#888', fontSize: '12px' }}>{hlState.dictResult.phonetic}</span>}
+                        {hlState.dictResult.audio && (
+                          <button onClick={() => hlState.playDictAudio(hlState.dictResult!.audio!)} style={{ background: 'none', border: 'none', cursor: 'pointer', marginLeft: '4px', fontSize: '14px' }} title="Listen">{'\uD83D\uDD0A'}</button>
+                        )}
+                      </div>
+                      {hlState.dictResult.meanings.map((m, mi) => (
+                        <div key={mi} style={{ marginBottom: '8px' }}>
+                          <div style={{ fontStyle: 'italic', color: '#2f95dc', fontSize: '11px', fontWeight: 600, marginBottom: '2px' }}>{m.partOfSpeech}</div>
+                          {m.definitions.map((d, di) => (
+                            <div key={di} style={{ marginBottom: '4px', paddingLeft: '6px', fontSize: '12px' }}>
+                              <div>{di + 1}. {d.definition}</div>
+                              {d.example && <div style={{ color: '#888', fontStyle: 'italic', fontSize: '11px', marginTop: '1px' }}>"{d.example}"</div>}
+                            </div>
+                          ))}
+                        </div>
+                      ))}
+                      {hlState.dictResult.synonyms.length > 0 && (
+                        <div style={{ marginBottom: '6px', fontSize: '12px' }}>
+                          <strong style={{ color: '#2f95dc' }}>Synonyms: </strong>
+                          {hlState.dictResult.synonyms.map((syn, i) => (
+                            <span key={i}>
+                              <button onClick={() => hlState.handleDefine(syn)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#2f95dc', fontSize: '12px', padding: 0, textDecoration: 'underline' }}>{syn}</button>
+                              {i < hlState.dictResult!.synonyms.length - 1 ? ', ' : ''}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                      {hlState.dictResult.antonyms.length > 0 && (
+                        <div style={{ marginBottom: '4px', fontSize: '12px' }}>
+                          <strong style={{ color: '#e57373' }}>Antonyms: </strong>
+                          {hlState.dictResult.antonyms.map((ant, i) => (
+                            <span key={i}>
+                              <button onClick={() => hlState.handleDefine(ant)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#e57373', fontSize: '12px', padding: 0, textDecoration: 'underline' }}>{ant}</button>
+                              {i < hlState.dictResult!.antonyms.length - 1 ? ', ' : ''}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+              )}
+
               {/* Actions */}
               <div style={webStyles.popupActions}>
                 <button
-                  onClick={() => setSelectionPopup(null)}
+                  onClick={() => { hlState.setSelectionPopup(null); hlState.setShowDict(false); }}
                   style={webStyles.popupButtonCancel}
                 >
                   Cancel
@@ -1726,42 +1500,42 @@ export default function ReaderScreen() {
         {/* TTS Player */}
         {wordsReady && (
           <div style={{ ...webStyles.ttsBar, backgroundColor: themes[activeTheme].bg, borderTopColor: activeTheme === 'quiet' ? '#555' : '#eee', opacity: barsVisible ? 1 : 0, transition: 'opacity 0.3s', pointerEvents: barsVisible ? 'auto' as const : 'none' as const }}>
-            <button onClick={handleStop} style={webStyles.ttsButton}>
+            <button onClick={tts.handleStop} style={webStyles.ttsButton}>
               {'\u25A0'}
             </button>
             <button
-              onClick={handlePlayPause}
+              onClick={tts.handlePlayPause}
               style={{
                 ...webStyles.ttsButton,
-                backgroundColor: isPlaying ? '#333' : '#2f95dc',
+                backgroundColor: tts.isPlaying ? '#333' : '#2f95dc',
                 color: '#fff',
                 padding: '6px 20px',
                 borderRadius: '16px',
               }}
             >
-              {isPlaying ? '\u23F8' : '\u25B6'}
+              {tts.isPlaying ? '\u23F8' : '\u25B6'}
             </button>
-            {isEditingSpeed ? (
+            {tts.isEditingSpeed ? (
               <input
                 type="text"
-                value={speedInput}
-                onChange={(e) => setSpeedInput(e.target.value.replace(/[^0-9.]/g, ''))}
+                value={tts.speedInput}
+                onChange={(e) => tts.setSpeedInput(e.target.value.replace(/[^0-9.]/g, ''))}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter') handleSpeedInputSubmit();
-                  if (e.key === 'Escape') { setIsEditingSpeed(false); setSpeedInput(''); }
+                  if (e.key === 'Enter') tts.handleSpeedInputSubmit();
+                  if (e.key === 'Escape') { tts.setIsEditingSpeed(false); tts.setSpeedInput(''); }
                 }}
-                onBlur={handleSpeedInputSubmit}
-                placeholder={String(ttsSpeed)}
+                onBlur={tts.handleSpeedInputSubmit}
+                placeholder={String(tts.ttsSpeed)}
                 autoFocus
                 style={webStyles.speedInput}
               />
             ) : (
               <button
-                onClick={() => { setIsEditingSpeed(true); setSpeedInput(''); }}
+                onClick={() => { tts.setIsEditingSpeed(true); tts.setSpeedInput(''); }}
                 style={webStyles.speedDisplay}
-                title="Click to type a speed (0.5–3)"
+                title="Click to type a speed (0.5-3)"
               >
-                {ttsSpeed}x
+                {tts.ttsSpeed}x
               </button>
             )}
             <input
@@ -1769,39 +1543,33 @@ export default function ReaderScreen() {
               min="0.5"
               max="3"
               step="0.25"
-              value={ttsSpeed}
+              value={tts.ttsSpeed}
               onChange={(e) => {
                 const newSpeed = parseFloat(e.target.value);
-                setTtsSpeed(newSpeed);
-                if (isPlaying) {
-                  const resumeFrom = currentWordIndex >= 0 ? currentWordIndex : 0;
-                  stopSpeaking();
-                  startTTSFromWord(resumeFrom, newSpeed);
-                }
+                tts.handleSpeedChange(newSpeed);
               }}
               style={webStyles.speedSlider}
             />
-            {availableVoices.length > 0 && (
+            {tts.availableVoices.length > 0 && (
               <select
-                value={selectedVoice?.name || ''}
+                value={tts.selectedVoice?.name || ''}
                 onChange={(e) => {
-                  const voice = availableVoices.find((v) => v.name === e.target.value) || null;
-                  setSelectedVoice(voice);
-                  selectedVoiceRef.current = voice;
-                  // Restart playback with new voice if currently playing
-                  if (isPlaying) {
-                    const resumeFrom = currentWordIndex >= 0 ? currentWordIndex : 0;
+                  const voice = tts.availableVoices.find((v) => v.name === e.target.value) || null;
+                  tts.setSelectedVoice(voice);
+                  tts.selectedVoiceRef.current = voice;
+                  if (tts.isPlaying) {
+                    const resumeFrom = tts.currentWordIndex >= 0 ? tts.currentWordIndex : 0;
                     stopSpeaking();
-                    startTTSFromWord(resumeFrom, ttsSpeed);
+                    tts.startTTSFromWord(resumeFrom, tts.ttsSpeed);
                   }
                 }}
                 style={webStyles.voiceSelect}
               >
                 <option value="">Default voice</option>
-                {favoriteVoiceNames.length > 0 && availableVoices.some((v) => favoriteVoiceNames.includes(v.name)) && (
+                {tts.favoriteVoiceNames.length > 0 && tts.availableVoices.some((v) => tts.favoriteVoiceNames.includes(v.name)) && (
                   <optgroup label="Favorites">
-                    {availableVoices
-                      .filter((v) => favoriteVoiceNames.includes(v.name))
+                    {tts.availableVoices
+                      .filter((v) => tts.favoriteVoiceNames.includes(v.name))
                       .map((v) => (
                         <option key={v.name} value={v.name}>
                           {v.name} ({v.lang})
@@ -1810,8 +1578,8 @@ export default function ReaderScreen() {
                   </optgroup>
                 )}
                 <optgroup label="All voices">
-                  {availableVoices
-                    .filter((v) => !favoriteVoiceNames.includes(v.name))
+                  {tts.availableVoices
+                    .filter((v) => !tts.favoriteVoiceNames.includes(v.name))
                     .map((v) => (
                       <option key={v.name} value={v.name}>
                         {v.name} ({v.lang})

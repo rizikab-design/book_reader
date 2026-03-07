@@ -4,13 +4,20 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 
-const app = express();
-const PORT = 3001;
+const { readFile, writeFile } = require('fs').promises;
 
-// Directories
-const BOOKS_DIR = path.join(__dirname, 'books');
-const COVERS_DIR = path.join(__dirname, 'covers');
-const DB_FILE = path.join(__dirname, 'library.json');
+const app = express();
+const PORT = parseInt(process.env.PORT, 10) || 3001;
+if (PORT < 1 || PORT > 65535) {
+  console.error('Invalid PORT value');
+  process.exit(1);
+}
+
+// Directories — use DATA_DIR env (set by Electron for packaged app) or __dirname
+const DATA_ROOT = process.env.DATA_DIR || __dirname;
+const BOOKS_DIR = path.join(DATA_ROOT, 'books');
+const COVERS_DIR = path.join(DATA_ROOT, 'covers');
+const DB_FILE = path.join(DATA_ROOT, 'library.json');
 
 // Ensure directories exist
 fs.mkdirSync(BOOKS_DIR, { recursive: true });
@@ -26,16 +33,17 @@ function withLibraryLock(fn) {
 }
 
 // Initialize library DB
-function loadLibrary() {
+async function loadLibrary() {
   try {
-    return JSON.parse(fs.readFileSync(DB_FILE, 'utf-8'));
+    const data = await readFile(DB_FILE, 'utf-8');
+    return JSON.parse(data);
   } catch {
     return [];
   }
 }
 
-function saveLibrary(books) {
-  fs.writeFileSync(DB_FILE, JSON.stringify(books, null, 2));
+async function saveLibrary(books) {
+  await writeFile(DB_FILE, JSON.stringify(books, null, 2));
 }
 
 // Middleware — restrict CORS to localhost origins
@@ -50,8 +58,8 @@ app.use(cors({
   },
 }));
 app.use(express.json());
-app.use('/books', express.static(BOOKS_DIR));
-app.use('/covers', express.static(COVERS_DIR));
+app.use('/books', express.static(BOOKS_DIR, { dotfiles: 'deny' }));
+app.use('/covers', express.static(COVERS_DIR, { dotfiles: 'deny' }));
 
 // File upload
 const storage = multer.diskStorage({
@@ -80,8 +88,8 @@ const upload = multer({
 // --- Routes ---
 
 // List all books
-app.get('/api/books', (req, res) => {
-  const books = loadLibrary();
+app.get('/api/books', async (req, res) => {
+  const books = await loadLibrary();
   res.json(books);
 });
 
@@ -123,10 +131,10 @@ app.post('/api/books', upload.single('file'), async (req, res) => {
       fileSize: req.file.size,
     };
 
-    await withLibraryLock(() => {
-      const library = loadLibrary();
+    await withLibraryLock(async () => {
+      const library = await loadLibrary();
       library.push(book);
-      saveLibrary(library);
+      await saveLibrary(library);
     });
 
     res.json(book);
@@ -143,10 +151,15 @@ app.post('/api/books', upload.single('file'), async (req, res) => {
 // Delete a book (locked to prevent concurrent writes)
 app.delete('/api/books/:id', async (req, res) => {
   try {
-    const result = await withLibraryLock(() => {
-      const library = loadLibrary();
+    const result = await withLibraryLock(async () => {
+      const library = await loadLibrary();
       const book = library.find((b) => b.id === req.params.id);
       if (!book) return null;
+
+      // Validate filename doesn't traverse directories
+      if (book.filename.includes('/') || book.filename.includes('\\') || book.filename.includes('..')) {
+        return { error: 'Invalid filename' };
+      }
 
       // Delete files
       const bookPath = path.join(BOOKS_DIR, book.filename);
@@ -161,7 +174,7 @@ app.delete('/api/books/:id', async (req, res) => {
       }
 
       const updated = library.filter((b) => b.id !== req.params.id);
-      saveLibrary(updated);
+      await saveLibrary(updated);
       return { ok: true };
     });
 
@@ -283,8 +296,13 @@ async function extractEpubMetadata(bookPath, bookFilename) {
           const ext = path.extname(coverHref).toLowerCase() || '.jpg';
           const coverFilename = `${bookFilename}${ext}`;
           const coverPath = path.join(COVERS_DIR, coverFilename);
-          fs.writeFileSync(coverPath, coverEntry.getData());
-          result.coverFile = coverFilename;
+          const coverData = coverEntry.getData();
+          if (coverData.length > 5 * 1024 * 1024) {
+            // Skip oversized cover
+          } else {
+            fs.writeFileSync(coverPath, coverData);
+            result.coverFile = coverFilename;
+          }
         }
       }
     }
@@ -315,6 +333,33 @@ async function extractPdfMetadata(bookPath, bookFilename) {
 
   return result;
 }
+
+// Serve the built Expo web app (for Electron / production)
+const distPath = path.join(__dirname, '..', 'dist');
+if (fs.existsSync(distPath)) {
+  app.use(express.static(distPath, { dotfiles: 'deny' }));
+  // SPA fallback for client-side routing
+  app.get('*', (req, res) => {
+    const filePath = path.resolve(distPath, req.path.replace(/^\//, ''));
+    if (!filePath.startsWith(distPath)) {
+      return res.status(400).send('Invalid path');
+    }
+    if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
+      res.sendFile(filePath);
+    } else {
+      res.sendFile(path.join(distPath, 'index.html'));
+    }
+  });
+}
+
+// Global error handler
+app.use((err, req, res, next) => {
+  if (err.message === 'Not allowed by CORS') {
+    return res.status(403).json({ error: 'CORS not allowed' });
+  }
+  console.error('Server error:', err.message);
+  res.status(500).json({ error: 'Internal server error' });
+});
 
 app.listen(PORT, () => {
   console.log(`Book Reader server running at http://localhost:${PORT}`);

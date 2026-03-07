@@ -1,6 +1,6 @@
 // API client for the local book server
 
-const API_BASE = 'http://localhost:3001';
+import { API_BASE } from './config';
 const FETCH_TIMEOUT = 30000; // 30s timeout for all requests
 
 export interface BookEntry {

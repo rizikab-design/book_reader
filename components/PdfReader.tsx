@@ -6,46 +6,22 @@
  * - TTS with word highlighting
  * - Themes, bookmarks, highlights/notes, search
  * - Keyboard shortcuts
+ *
+ * State management delegated to shared hooks in @/hooks/*.
  */
 
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { router } from 'expo-router';
-import {
-  speakText,
-  stopSpeaking,
-  pauseSpeaking,
-  resumeSpeaking,
-  getAvailableVoices,
-} from '@/lib/tts-engine';
-
-type HighlightColor = 'yellow' | 'blue' | 'green' | 'pink';
-
-const HIGHLIGHT_COLORS: Record<HighlightColor, string> = {
-  yellow: '#FFEB3B',
-  blue: '#90CAF9',
-  green: '#A5D6A7',
-  pink: '#F48FB1',
-};
-
-interface PdfHighlight {
-  id: number;
-  selectedText: string;
-  note: string;
-  color: HighlightColor;
-  page: number;
-  createdAt: string;
-}
-
-type ThemeName = 'original' | 'quiet' | 'paper' | 'bold' | 'calm' | 'focus';
-
-const themes: Record<ThemeName, { label: string; bg: string; text: string; fontWeight?: string; fontFamily?: string }> = {
-  original: { label: 'Original', bg: '#ffffff', text: '#000000' },
-  quiet: { label: 'Quiet', bg: '#3e3e3e', text: '#d4d4d4' },
-  paper: { label: 'Paper', bg: '#e8e4dc', text: '#4a4a4a' },
-  bold: { label: 'Bold', bg: '#ffffff', text: '#000000', fontWeight: 'bold' },
-  calm: { label: 'Calm', bg: '#f0e6c8', text: '#5a4e3a', fontFamily: 'Georgia, serif' },
-  focus: { label: 'Focus', bg: '#faf5e4', text: '#3a3a2a', fontFamily: 'Georgia, serif' },
-};
+import { stopSpeaking } from '@/lib/tts-engine';
+import { HighlightColor, HIGHLIGHT_COLORS, ThemeName, themes, ReaderHighlight } from '@/hooks/reader-types';
+import { usePersistedState, bookKey } from '@/hooks/usePersistedState';
+import { useToast } from '@/hooks/useToast';
+import { useAutoHideBars } from '@/hooks/useAutoHideBars';
+import { useReaderTheme } from '@/hooks/useReaderTheme';
+import { useReaderSearch, SearchResult } from '@/hooks/useReaderSearch';
+import { useReaderTts } from '@/hooks/useReaderTts';
+import { useReaderHighlights } from '@/hooks/useReaderHighlights';
+import { useReaderBookmarks } from '@/hooks/useReaderBookmarks';
 
 const MAX_SEARCH_RESULTS = 50;
 const SEARCH_EXCERPT_CONTEXT = 30;
@@ -67,136 +43,74 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
   const textLayerRef = useRef<HTMLDivElement | null>(null);
   const pdfDocRef = useRef<any>(null);
 
-  const storageKey = (key: string) => `reader-${bookId}-${key}`;
-  function loadStored<T>(key: string, fallback: T): T {
-    try { const v = localStorage.getItem(storageKey(key)); return v ? JSON.parse(v) : fallback; } catch { return fallback; }
-  }
-
+  // ── Core page state ──────────────────────────────────────────────────
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
   const [isRendering, setIsRendering] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [scale, setScale] = useState(() => loadStored<number>('pdfScale', 1.5));
-
-  // TTS
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [ttsSpeed, setTtsSpeed] = useState(() => loadStored<number>('ttsSpeed', 1));
-  const [currentWordIndex, setCurrentWordIndex] = useState(-1);
+  const [scale, setScale] = usePersistedState<number>(bookKey(bookId, 'pdfScale'), 1.5);
   const [pageWords, setPageWords] = useState<string[]>([]);
   const wordsRef = useRef<string[]>([]);
-  const resumeWordIndexRef = useRef(-1);
-  const ttsGenRef = useRef(0);
-  const isPlayingRef = useRef(false);
-  const ttsSpeedRef = useRef(ttsSpeed);
-  const currentWordIndexRef = useRef(-1);
 
-  // Voice
-  const [availableVoices, setAvailableVoices] = useState<SpeechSynthesisVoice[]>([]);
-  const [selectedVoice, setSelectedVoice] = useState<SpeechSynthesisVoice | null>(null);
-  const selectedVoiceRef = useRef<SpeechSynthesisVoice | null>(null);
-  const [favoriteVoiceNames, setFavoriteVoiceNames] = useState<string[]>([]);
-
-  // Speed editing
-  const [isEditingSpeed, setIsEditingSpeed] = useState(false);
-  const [speedInput, setSpeedInput] = useState('');
-
-  // Theme
-  const [activeTheme, setActiveTheme] = useState<ThemeName>(() => {
-    try { const v = localStorage.getItem('reader-global-theme'); return v ? JSON.parse(v) : 'original'; } catch { return 'original' as ThemeName; }
-  });
-  const [fontSize, setFontSize] = useState(() => {
-    try { const v = localStorage.getItem('reader-global-fontSize'); return v ? JSON.parse(v) : 100; } catch { return 100; }
-  });
-  const [showThemes, setShowThemes] = useState(false);
-
-  // Bookmarks
-  const [bookmarks, setBookmarks] = useState<{ id: number; page: number; label: string }[]>(() => loadStored('bookmarks', []));
-  const [showBookmarks, setShowBookmarks] = useState(false);
-  const bookmarkIdRef = useRef(loadStored<number>('bookmarkNextId', 0));
-  const [editingBookmarkId, setEditingBookmarkId] = useState<number | null>(null);
-  const [bookmarkTitleInput, setBookmarkTitleInput] = useState('');
-
-  // Highlights & Notes
-  const [highlights, setHighlights] = useState<PdfHighlight[]>(() => loadStored('highlights', []));
-  const [showHighlights, setShowHighlights] = useState(false);
-  const highlightIdRef = useRef(loadStored<number>('highlightNextId', 0));
-  const [selectionPopup, setSelectionPopup] = useState<{ x: number; y: number; text: string } | null>(null);
-  const [noteText, setNoteText] = useState('');
-  const [selectedColor, setSelectedColor] = useState<HighlightColor>('yellow');
-  const [editingHighlightId, setEditingHighlightId] = useState<number | null>(null);
-  const [editNoteText, setEditNoteText] = useState('');
-
-  // Popup drag state
-  const [popupPos, setPopupPos] = useState<{ x: number; y: number } | null>(null);
-  const popupDragRef = useRef<{ startX: number; startY: number; origX: number; origY: number } | null>(null);
-
-  // Search
-  const [showSearch, setShowSearch] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [searchResults, setSearchResults] = useState<{ page: number; text: string }[]>([]);
-  const [isSearching, setIsSearching] = useState(false);
-  const searchInputRef = useRef<HTMLInputElement | null>(null);
-  const searchCancelRef = useRef(false);
-
-  // Keyboard shortcuts
-  const [showShortcuts, setShowShortcuts] = useState(false);
-
-  // Auto-hide bars
-  const [barsVisible, setBarsVisible] = useState(true);
-  const barsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Toast notifications
-  const [toast, setToast] = useState<string | null>(null);
-  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // TOC
+  // ── TOC ──────────────────────────────────────────────────────────────
   const [tocItems, setTocItems] = useState<{ title: string; page: number }[]>([]);
   const [showToc, setShowToc] = useState(false);
 
-  // Page thumbnails
+  // ── Thumbnails ───────────────────────────────────────────────────────
   const [showThumbnails, setShowThumbnails] = useState(false);
   const [thumbsLoaded, setThumbsLoaded] = useState(0);
   const thumbnailsContainerRef = useRef<HTMLDivElement | null>(null);
   const thumbnailCacheRef = useRef<Map<number, string>>(new Map());
 
-  // Sync refs
-  useEffect(() => { ttsSpeedRef.current = ttsSpeed; }, [ttsSpeed]);
-  useEffect(() => { isPlayingRef.current = isPlaying; }, [isPlaying]);
-  useEffect(() => { currentWordIndexRef.current = currentWordIndex; }, [currentWordIndex]);
+  // ── Panels ───────────────────────────────────────────────────────────
+  const [showThemes, setShowThemes] = useState(false);
+  const [showShortcuts, setShowShortcuts] = useState(false);
 
-  // Persist
-  useEffect(() => { localStorage.setItem(storageKey('ttsSpeed'), JSON.stringify(ttsSpeed)); }, [ttsSpeed]);
-  useEffect(() => { localStorage.setItem(storageKey('bookmarks'), JSON.stringify(bookmarks)); localStorage.setItem(storageKey('bookmarkNextId'), JSON.stringify(bookmarkIdRef.current)); }, [bookmarks]);
-  useEffect(() => { localStorage.setItem(storageKey('highlights'), JSON.stringify(highlights)); localStorage.setItem(storageKey('highlightNextId'), JSON.stringify(highlightIdRef.current)); }, [highlights]);
-  useEffect(() => { localStorage.setItem('reader-global-theme', JSON.stringify(activeTheme)); }, [activeTheme]);
-  useEffect(() => { localStorage.setItem('reader-global-fontSize', JSON.stringify(fontSize)); }, [fontSize]);
+  // ── Shared hooks ─────────────────────────────────────────────────────
+  const { toast, showToast } = useToast();
+  const { barsVisible } = useAutoHideBars();
+  const { activeTheme, setActiveTheme, fontSize, setFontSize, themeColors, panelTheme, panelBorder, changeFontSize } = useReaderTheme();
+  const { showSearch, setShowSearch, searchQuery, setSearchQuery, searchResults, setSearchResults, isSearching, setIsSearching, searchInputRef, searchCancelRef, openSearch, closeSearch } = useReaderSearch();
+
+  const tts = useReaderTts({
+    bookId,
+    getWords: () => wordsRef.current,
+  });
+
+  const hlState = useReaderHighlights({
+    bookId,
+    bookTitle,
+    showToast,
+  });
+
+  const bmState = useReaderBookmarks({
+    bookId,
+    currentPage,
+    showToast,
+  });
+
+  // ── Page / progress persistence ──────────────────────────────────────
   useEffect(() => {
-    localStorage.setItem(storageKey('page'), String(currentPage));
+    localStorage.setItem(bookKey(bookId, 'page'), String(currentPage));
     if (totalPages > 0) {
-      localStorage.setItem(storageKey('progress'), String(currentPage / totalPages));
+      localStorage.setItem(bookKey(bookId, 'progress'), String(currentPage / totalPages));
     }
     localStorage.setItem('reader-lastReadId', bookId);
     localStorage.setItem('reader-lastReadTime', String(Date.now()));
   }, [currentPage, totalPages]);
-  useEffect(() => { localStorage.setItem(storageKey('pdfScale'), JSON.stringify(scale)); }, [scale]);
 
-  // Load voices
+  // ── TTS word highlight overlay ───────────────────────────────────────
+  const [wordHighlightPos, setWordHighlightPos] = useState<{ text: string } | null>(null);
   useEffect(() => {
-    try { const stored = localStorage.getItem('tts-favorite-voices'); if (stored) setFavoriteVoiceNames(JSON.parse(stored)); } catch {}
-    getAvailableVoices().then((voices) => {
-      const english = voices.filter((v) => v.lang.startsWith('en'));
-      setAvailableVoices(english);
-      try {
-        const preferredName = localStorage.getItem('tts-preferred-voice');
-        if (preferredName) {
-          const voice = english.find((v) => v.name === preferredName);
-          if (voice) { setSelectedVoice(voice); selectedVoiceRef.current = voice; }
-        }
-      } catch {}
-    });
-  }, []);
+    if (tts.currentWordIndex >= 0 && tts.currentWordIndex < pageWords.length) {
+      setWordHighlightPos({ text: pageWords[tts.currentWordIndex] });
+    } else {
+      setWordHighlightPos(null);
+    }
+  }, [tts.currentWordIndex, pageWords]);
 
-  // Load PDF
+  // ── Load PDF ─────────────────────────────────────────────────────────
   useEffect(() => {
     loadPdf();
     return () => stopSpeaking();
@@ -232,11 +146,38 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
           }
           setTocItems(toc);
         }
+
+        // Auto-generate TOC if none found
+        if (!outline || outline.length === 0) {
+          const autoToc: { title: string; page: number }[] = [];
+          const scanLimit = Math.min(pdf.numPages, 200);
+          for (let p = 1; p <= scanLimit; p++) {
+            try {
+              const page = await pdf.getPage(p);
+              const textContent = await page.getTextContent();
+              const items = textContent.items as any[];
+              if (items.length === 0) continue;
+              const maxFontSize = Math.max(...items.map((it: any) => it.height || 0));
+              if (maxFontSize <= 0) continue;
+              const heights = items.map((it: any) => it.height || 0).filter((h: number) => h > 0).sort((a: number, b: number) => a - b);
+              const medianHeight = heights[Math.floor(heights.length / 2)] || 10;
+              const threshold = medianHeight * 1.3;
+              const headingItems = items.filter((it: any) => (it.height || 0) >= threshold && it.str?.trim().length > 2);
+              if (headingItems.length > 0 && headingItems.length <= 3) {
+                const title = headingItems.map((it: any) => it.str.trim()).join(' ');
+                if (title.length > 1 && title.length < 120) {
+                  autoToc.push({ title, page: p });
+                }
+              }
+            } catch {}
+          }
+          if (autoToc.length > 0) setTocItems(autoToc);
+        }
       } catch {}
 
       // Restore saved page
       let startPage = 1;
-      try { const saved = localStorage.getItem(storageKey('page')); if (saved) startPage = parseInt(saved, 10); } catch {}
+      try { const saved = localStorage.getItem(bookKey(bookId, 'page')); if (saved) startPage = parseInt(saved, 10); } catch {}
       if (startPage > pdf.numPages || startPage < 1) startPage = 1;
 
       setCurrentPage(startPage);
@@ -247,7 +188,7 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
     }
   }
 
-  // Render a page thumbnail and cache as data URL
+  // ── Thumbnail rendering ──────────────────────────────────────────────
   async function renderThumbnail(pageNum: number): Promise<string> {
     if (thumbnailCacheRef.current.has(pageNum)) return thumbnailCacheRef.current.get(pageNum)!;
     const pdf = pdfDocRef.current;
@@ -261,7 +202,6 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
       const ctx = canvas.getContext('2d')!;
       await page.render({ canvasContext: ctx, viewport }).promise;
       const url = canvas.toDataURL('image/jpeg', 0.6);
-      // LRU eviction: remove oldest entries if cache exceeds limit
       if (thumbnailCacheRef.current.size >= THUMBNAIL_CACHE_LIMIT) {
         const firstKey = thumbnailCacheRef.current.keys().next().value;
         if (firstKey !== undefined) thumbnailCacheRef.current.delete(firstKey);
@@ -271,19 +211,17 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
     } catch { return ''; }
   }
 
-  // Apply saved highlights to text layer spans for a given page
+  // ── Apply saved highlights to text layer ─────────────────────────────
   function applyHighlightsToTextLayer(pageNum: number, textLayer: HTMLDivElement | null) {
     if (!textLayer) return;
-    const pageHighlights = highlights.filter((h) => h.page === pageNum);
+    const pageHighlights = hlState.highlights.filter((h) => h.page === pageNum);
     if (pageHighlights.length === 0) return;
 
     const spans = textLayer.querySelectorAll('span');
     if (spans.length === 0) return;
 
-    // Build full text from spans to find highlight positions
     for (const h of pageHighlights) {
       const hLower = h.selectedText.toLowerCase();
-      // Walk through spans finding matching text sequences
       let accumulated = '';
       let spanTexts: { span: HTMLSpanElement; start: number; text: string }[] = [];
       spans.forEach((span) => {
@@ -298,14 +236,13 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
         const idx = accLower.indexOf(hLower, searchFrom);
         if (idx === -1) break;
         const endIdx = idx + hLower.length;
-        // Mark all spans that overlap with [idx, endIdx)
         for (const st of spanTexts) {
           const spanEnd = st.start + st.text.length;
           if (st.start < endIdx && spanEnd > idx) {
             st.span.classList.add(`pdf-highlight-${h.color}`);
           }
         }
-        searchFrom = idx + 1; // find next occurrence too
+        searchFrom = idx + 1;
       }
     }
   }
@@ -326,7 +263,7 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
     return () => { cancelled = true; };
   }, [showThumbnails, totalPages]);
 
-  // Render page
+  // ── Render page ──────────────────────────────────────────────────────
   const renderPage = useCallback(async (pageNum: number) => {
     const pdf = pdfDocRef.current;
     if (!pdf || !canvasRef.current) return;
@@ -343,7 +280,6 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
 
       await page.render({ canvasContext: context, viewport }).promise;
 
-      // Build a selectable text layer on top of the canvas
       const textContent = await page.getTextContent();
       const textLayer = textLayerRef.current;
       if (textLayer) {
@@ -370,8 +306,8 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
       const words = fullText.split(/\s+/).filter((w: string) => w.length > 0);
       setPageWords(words);
       wordsRef.current = words;
-      resumeWordIndexRef.current = -1;
-      setCurrentWordIndex(-1);
+      tts.resumeWordIndexRef.current = -1;
+      tts.setCurrentWordIndex(-1);
 
       // Re-apply saved highlights to text layer spans
       applyHighlightsToTextLayer(pageNum, textLayer);
@@ -384,151 +320,30 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
   useEffect(() => {
     if (!isLoading && pdfDocRef.current) {
       stopSpeaking();
-      setIsPlaying(false);
-      setSelectionPopup(null); // Fix #5: clear stale popup on page change
+      tts.setIsPlaying(false);
+      hlState.setSelectionPopup(null);
       renderPage(currentPage);
     }
   }, [currentPage, isLoading, renderPage]);
 
-  // TTS functions
-  function startTTSFromWord(fromWordIndex: number, rate: number) {
-    const words = wordsRef.current;
-    if (words.length === 0) return;
-    const textFromWord = words.slice(fromWordIndex).join(' ');
-    if (!textFromWord) return;
-
-    const gen = ++ttsGenRef.current;
-    setIsPlaying(true);
-    speakText(textFromWord, rate, {
-      onEnd: () => {
-        if (ttsGenRef.current !== gen) return;
-        setIsPlaying(false);
-        setCurrentWordIndex(-1);
-        resumeWordIndexRef.current = -1;
-      },
-      onWord: (wordIndex: number) => {
-        if (ttsGenRef.current !== gen) return;
-        setCurrentWordIndex(wordIndex + fromWordIndex);
-      },
-      onError: () => {
-        if (ttsGenRef.current !== gen) return;
-        setIsPlaying(false);
-      },
-    }, selectedVoiceRef.current);
-  }
-
-  function handlePlayPause() {
-    if (window.speechSynthesis.speaking && !window.speechSynthesis.paused) {
-      pauseSpeaking();
-      setIsPlaying(false);
-    } else if (window.speechSynthesis.paused) {
-      resumeSpeaking();
-      setIsPlaying(true);
-    } else {
-      const startFrom = resumeWordIndexRef.current >= 0 ? resumeWordIndexRef.current : 0;
-      setCurrentWordIndex(startFrom);
-      startTTSFromWord(startFrom, ttsSpeed);
-    }
-  }
-
-  const handlePlayPauseRef = useRef(handlePlayPause);
-  handlePlayPauseRef.current = handlePlayPause;
-
-  function handleStop() {
-    const idx = currentWordIndexRef.current;
-    resumeWordIndexRef.current = idx >= 0 ? idx : -1;
-    stopSpeaking();
-    setIsPlaying(false);
-    setCurrentWordIndex(-1);
-  }
-
-  function handleSpeedInputSubmit() {
-    const val = parseFloat(speedInput);
-    if (!isNaN(val) && val >= 0.5 && val <= 3) {
-      setTtsSpeed(val);
-      if (isPlaying) {
-        const resumeFrom = currentWordIndex >= 0 ? currentWordIndex : 0;
-        stopSpeaking();
-        startTTSFromWord(resumeFrom, val);
-      }
-    }
-    setIsEditingSpeed(false);
-    setSpeedInput('');
-  }
-
-  // TTS word highlighting via a floating overlay
-  const [wordHighlightPos, setWordHighlightPos] = useState<{ text: string } | null>(null);
-  useEffect(() => {
-    if (currentWordIndex >= 0 && currentWordIndex < pageWords.length) {
-      setWordHighlightPos({ text: pageWords[currentWordIndex] });
-    } else {
-      setWordHighlightPos(null);
-    }
-  }, [currentWordIndex, pageWords]);
-
-  // Bookmarks
-  function toggleBookmark() {
-    const existing = bookmarks.find((b) => b.page === currentPage);
-    if (existing) {
-      setBookmarks((prev) => prev.filter((b) => b.page !== currentPage));
-      showToast('Bookmark removed');
-    } else {
-      const newId = ++bookmarkIdRef.current;
-      setBookmarks((prev) => [...prev, { id: newId, page: currentPage, label: `Page ${currentPage}` }]);
-      setShowBookmarks(true);
-      setEditingBookmarkId(newId);
-      setBookmarkTitleInput('');
-    }
-  }
-
-  function saveBookmarkTitle(id: number) {
-    if (bookmarkTitleInput.trim()) {
-      setBookmarks((prev) => prev.map((b) => b.id === id ? { ...b, label: bookmarkTitleInput.trim() } : b));
-    }
-    setEditingBookmarkId(null);
-    setBookmarkTitleInput('');
-  }
-
-  // Highlights
+  // ── Highlights ───────────────────────────────────────────────────────
   function saveHighlight() {
-    if (!selectionPopup) return;
-    const newId = ++highlightIdRef.current;
-    const h: PdfHighlight = {
-      id: newId,
-      selectedText: selectionPopup.text,
-      note: noteText,
-      color: selectedColor,
+    if (!hlState.selectionPopup) return;
+    hlState.addHighlight({
+      selectedText: hlState.selectionPopup.selectedText,
+      note: hlState.noteText,
+      color: hlState.selectedColor,
+      pageInfo: `Page ${currentPage}`,
       page: currentPage,
       createdAt: new Date().toLocaleString(),
-    };
-    setHighlights((prev) => [...prev, h]);
-    setSelectionPopup(null);
-    setNoteText('');
-    showToast('Highlight saved');
-  }
-
-  function exportHighlights() {
-    if (highlights.length === 0) return;
-    const lines = highlights.map((h, i) => {
-      let line = `${i + 1}. "${h.selectedText}"`;
-      if (h.note) line += `\n   Note: ${h.note}`;
-      line += `\n   Color: ${h.color} | Page: ${h.page} | ${h.createdAt}`;
-      return line;
     });
-    const text = `Highlights & Notes\n${'='.repeat(40)}\n\n${lines.join('\n\n')}`;
-    const blob = new Blob([text], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `highlights-${bookId}.txt`;
-    a.click();
-    URL.revokeObjectURL(url);
+    hlState.setSelectionPopup(null);
+    hlState.setNoteText('');
   }
 
-  // Text selection handler — only trigger on actual text selection, not button clicks
+  // ── Text selection handler ───────────────────────────────────────────
   useEffect(() => {
     function handleMouseUp(e: MouseEvent) {
-      // Ignore clicks on buttons, inputs, dropdowns, popups
       const target = e.target as HTMLElement;
       if (target.closest('button') || target.closest('select') || target.closest('input') || target.closest('textarea') || target.closest('[data-popup]')) return;
 
@@ -537,20 +352,38 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
       if (text && text.length >= MIN_SELECTION_LENGTH) {
         const popupX = Math.min(e.clientX, window.innerWidth - 160);
         const popupY = Math.min(e.clientY + 10, window.innerHeight - 300);
-        setSelectionPopup({ x: popupX, y: popupY, text });
-        setPopupPos(null); // reset drag offset on new selection
+        hlState.setSelectionPopup({ x: popupX, y: popupY, selectedText: text });
+        hlState.setPopupPos(null);
       }
     }
+    function handleDblClick(e: MouseEvent) {
+      const sel = window.getSelection();
+      const word = sel?.toString().trim();
+      if (!word || word.includes(' ') || word.length > 30 || word.length < 2) return;
+      const target = e.target as HTMLElement;
+      if (target.closest('button') || target.closest('[data-popup]')) return;
+      const x = Math.min(e.clientX, window.innerWidth - 160);
+      const y = Math.min(e.clientY + 10, window.innerHeight - 300);
+      hlState.setSelectionPopup({ x, y, selectedText: word });
+      hlState.setPopupPos(null);
+      hlState.setNoteText('');
+      hlState.setSelectedColor('yellow');
+      hlState.handleDefine(word);
+    }
     window.addEventListener('mouseup', handleMouseUp);
-    return () => window.removeEventListener('mouseup', handleMouseUp);
+    window.addEventListener('dblclick', handleDblClick);
+    return () => {
+      window.removeEventListener('mouseup', handleMouseUp);
+      window.removeEventListener('dblclick', handleDblClick);
+    };
   }, []);
 
-  // Search with cancellation
+  // ── PDF search ───────────────────────────────────────────────────────
   async function handleSearch(query: string) {
     if (!pdfDocRef.current || !query.trim()) { setSearchResults([]); return; }
     searchCancelRef.current = false;
     setIsSearching(true);
-    const results: { page: number; text: string }[] = [];
+    const results: SearchResult[] = [];
     const pdf = pdfDocRef.current;
     const lowerQuery = query.toLowerCase();
     for (let i = 1; i <= pdf.numPages && results.length < MAX_SEARCH_RESULTS; i++) {
@@ -564,7 +397,7 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
           const start = Math.max(0, idx - SEARCH_EXCERPT_CONTEXT);
           const end = Math.min(pageText.length, idx + query.length + SEARCH_EXCERPT_CONTEXT);
           const excerpt = (start > 0 ? '...' : '') + pageText.slice(start, end) + (end < pageText.length ? '...' : '');
-          results.push({ page: i, text: excerpt });
+          results.push({ page: i, excerpt });
         }
       } catch {}
     }
@@ -574,7 +407,7 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
     setIsSearching(false);
   }
 
-  // Page nav — use refs to avoid stale closures in keyboard handler
+  // ── Page navigation ──────────────────────────────────────────────────
   const totalPagesRef = useRef(totalPages);
   useEffect(() => { totalPagesRef.current = totalPages; }, [totalPages]);
 
@@ -586,15 +419,13 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
   nextPageRef.current = nextPage;
   prevPageRef.current = prevPage;
 
-  // Theme
-  function setTheme(name: ThemeName) { setActiveTheme(name); }
-  function changeFontSize(delta: number) {
-    const newSize = Math.max(50, Math.min(200, fontSize + delta));
-    setFontSize(newSize);
-    setScale(1.5 * (newSize / 100));
+  // ── Font size + scale sync ───────────────────────────────────────────
+  function changeFontSizePdf(delta: number) {
+    changeFontSize(delta);
+    setScale(1.5 * (Math.max(50, Math.min(200, fontSize + delta)) / 100));
   }
 
-  // Ctrl+scroll zoom
+  // ── Ctrl+scroll zoom ────────────────────────────────────────────────
   useEffect(() => {
     function handleWheel(e: WheelEvent) {
       if (e.ctrlKey || e.metaKey) {
@@ -609,60 +440,38 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
     return () => window.removeEventListener('wheel', handleWheel);
   }, []);
 
-  // Keyboard shortcuts
+  // ── Keyboard shortcuts ───────────────────────────────────────────────
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
       const target = e.target as HTMLElement;
       if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return;
       if ((e.metaKey || e.ctrlKey) && e.key === 'f') {
         e.preventDefault();
-        setShowSearch((v) => { if (!v) setTimeout(() => searchInputRef.current?.focus(), 50); return !v; });
-      } else if (e.key === ' ') { e.preventDefault(); handlePlayPauseRef.current(); }
+        if (showSearch) closeSearch(); else openSearch();
+      } else if (e.key === ' ') { e.preventDefault(); tts.handlePlayPauseRef.current(); }
       else if (e.key === 'ArrowRight' || e.key === 'ArrowDown') nextPageRef.current();
       else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') prevPageRef.current();
       else if (e.key === '?') setShowShortcuts((v) => !v);
-      else if (e.key === 'Escape') { setSelectionPopup(null); setShowSearch(false); setShowShortcuts(false); }
+      else if (e.key === 'Escape') { hlState.setSelectionPopup(null); closeSearch(); setShowShortcuts(false); hlState.setShowDict(false); }
     }
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
-  // Auto-hide bars after 3s of inactivity
-  function resetBarsTimer() {
-    setBarsVisible(true);
-    if (barsTimerRef.current) clearTimeout(barsTimerRef.current);
-    barsTimerRef.current = setTimeout(() => setBarsVisible(false), 3000);
-  }
-  useEffect(() => {
-    function handleMouseMove() { resetBarsTimer(); }
-    window.addEventListener('mousemove', handleMouseMove);
-    resetBarsTimer();
-    return () => {
-      window.removeEventListener('mousemove', handleMouseMove);
-      if (barsTimerRef.current) clearTimeout(barsTimerRef.current);
-    };
-  }, []);
-
-  function showToast(msg: string) {
-    setToast(msg);
-    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
-    toastTimerRef.current = setTimeout(() => setToast(null), 2000);
+  // ── Close all panels helper ──────────────────────────────────────────
+  function closeAllPanels() {
+    setShowToc(false);
+    bmState.setShowBookmarks(false);
+    hlState.setShowHighlights(false);
+    setShowThemes(false);
+    closeSearch();
+    setShowThumbnails(false);
   }
 
-  // Cleanup TTS
-  useEffect(() => { return () => stopSpeaking(); }, []);
-
-  const themeColors = themes[activeTheme];
-  const panelTheme: React.CSSProperties = {
-    backgroundColor: themeColors.bg, color: themeColors.text,
-    borderColor: activeTheme === 'quiet' ? '#555' : '#e8e8e8',
-  };
-  const panelBorder = activeTheme === 'quiet' ? '#555' : '#f0f0f0';
+  // ── Derived values ───────────────────────────────────────────────────
   const progress = totalPages > 0 ? currentPage / totalPages : 0;
 
-  // Close all other panels helper
-  function closeAllPanels() { setShowToc(false); setShowBookmarks(false); setShowHighlights(false); setShowThemes(false); setShowSearch(false); setShowThumbnails(false); }
-
+  // ── Render ───────────────────────────────────────────────────────────
   return (
     <div style={{ ...s.container, backgroundColor: themeColors.bg }}>
       <style>{`
@@ -704,8 +513,8 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
             </svg>
           </button>
           {/* Highlights */}
-          <button onClick={() => { const opening = !showHighlights; closeAllPanels(); if (opening) setShowHighlights(true); }}
-            style={{ ...s.iconButton, color: showHighlights ? '#2f95dc' : '#555' }} title={`Highlights (${highlights.length})`}>
+          <button onClick={() => { const opening = !hlState.showHighlights; closeAllPanels(); if (opening) hlState.setShowHighlights(true); }}
+            style={{ ...s.iconButton, color: hlState.showHighlights ? '#2f95dc' : '#555' }} title={`Highlights (${hlState.highlights.length})`}>
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
               <rect x="3" y="3" width="18" height="18" rx="2" /><line x1="7" y1="8" x2="17" y2="8" /><line x1="7" y1="12" x2="17" y2="12" /><line x1="7" y1="16" x2="13" y2="16" />
             </svg>
@@ -716,7 +525,7 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
 
         <div style={s.topBarRight}>
           {/* Search */}
-          <button onClick={() => { const opening = !showSearch; closeAllPanels(); if (opening) { setShowSearch(true); setTimeout(() => searchInputRef.current?.focus(), 50); } }}
+          <button onClick={() => { const opening = !showSearch; closeAllPanels(); if (opening) openSearch(); }}
             style={{ ...s.iconButton, color: showSearch ? '#2f95dc' : '#555' }} title="Search (Cmd+F)">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
@@ -728,9 +537,9 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
             Aa
           </button>
           {/* Bookmark toggle */}
-          <button onClick={() => { const opening = !showBookmarks; closeAllPanels(); if (opening) setShowBookmarks(true); }}
-            style={{ ...s.iconButton, color: showBookmarks ? '#2f95dc' : (bookmarks.some((b) => b.page === currentPage) ? '#2f95dc' : '#555') }} title="Bookmarks">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill={bookmarks.some((b) => b.page === currentPage) ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" strokeLinejoin="round">
+          <button onClick={() => { const opening = !bmState.showBookmarks; closeAllPanels(); if (opening) bmState.setShowBookmarks(true); }}
+            style={{ ...s.iconButton, color: bmState.showBookmarks ? '#2f95dc' : (bmState.bookmarks.some((b) => b.page === currentPage) ? '#2f95dc' : '#555') }} title="Bookmarks">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill={bmState.bookmarks.some((b) => b.page === currentPage) ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" strokeLinejoin="round">
               <path d="M6 4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18l-6-4-6 4V4z" />
             </svg>
           </button>
@@ -745,15 +554,15 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
             <button onClick={() => setShowThemes(false)} style={s.closeBtn}>{'\u2715'}</button>
           </div>
           <div style={s.fontSizeRow}>
-            <button onClick={() => changeFontSize(-10)} style={s.fontSizeButton}><span style={{ fontSize: '14px' }}>A</span></button>
+            <button onClick={() => changeFontSizePdf(-10)} style={s.fontSizeButton}><span style={{ fontSize: '14px' }}>A</span></button>
             <span style={{ fontSize: '13px', color: '#666', minWidth: '40px', textAlign: 'center' }}>{fontSize}%</span>
-            <button onClick={() => changeFontSize(10)} style={s.fontSizeButton}><span style={{ fontSize: '20px' }}>A</span></button>
+            <button onClick={() => changeFontSizePdf(10)} style={s.fontSizeButton}><span style={{ fontSize: '20px' }}>A</span></button>
           </div>
           <div style={s.themeGrid}>
             {(Object.keys(themes) as ThemeName[]).map((key) => {
               const t = themes[key];
               return (
-                <button key={key} onClick={() => setTheme(key)} style={{
+                <button key={key} onClick={() => setActiveTheme(key)} style={{
                   ...s.themeCard, backgroundColor: t.bg, color: t.text,
                   border: activeTheme === key ? '2px solid #2f95dc' : '2px solid #e0e0e0',
                   fontWeight: t.fontWeight === 'bold' ? 700 : 400, fontFamily: t.fontFamily || 'inherit',
@@ -772,21 +581,21 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
         <div style={{ ...s.dropdown, right: '100px', ...panelTheme }}>
           <div style={s.dropdownHeader}>
             <strong>Search</strong>
-            <button onClick={() => { searchCancelRef.current = true; setShowSearch(false); setSearchQuery(''); setSearchResults([]); }} style={s.closeBtn}>{'\u2715'}</button>
+            <button onClick={() => closeSearch()} style={s.closeBtn}>{'\u2715'}</button>
           </div>
           <div style={{ padding: '8px 12px' }}>
             <input ref={searchInputRef} type="text" value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') handleSearch(searchQuery); if (e.key === 'Escape') { setShowSearch(false); } }}
+              onKeyDown={(e) => { if (e.key === 'Enter') handleSearch(searchQuery); if (e.key === 'Escape') closeSearch(); }}
               placeholder="Search in book..." style={s.searchInput} />
           </div>
           {isSearching && <div style={{ padding: '12px', fontSize: '13px', color: '#999', textAlign: 'center' }}>Searching...</div>}
           {!isSearching && searchResults.length > 0 && (
             <div style={{ overflow: 'auto', maxHeight: '350px' }}>
               {searchResults.map((r, i) => (
-                <button key={i} onClick={() => setCurrentPage(r.page)} style={s.tocItem}>
+                <button key={i} onClick={() => setCurrentPage(r.page!)} style={s.tocItem}>
                   <div style={{ fontSize: '12px' }} dangerouslySetInnerHTML={{
-                    __html: r.text.replace(
+                    __html: r.excerpt.replace(
                       new RegExp(`(${searchQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi'),
                       '<mark style="background:#FFEB3B;padding:0 1px;border-radius:2px">$1</mark>'
                     )
@@ -803,46 +612,46 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
       )}
 
       {/* Bookmarks dropdown */}
-      {showBookmarks && (
+      {bmState.showBookmarks && (
         <div style={{ ...s.dropdown, right: '12px', width: '260px', ...panelTheme }}>
           <div style={s.dropdownHeader}>
             <strong>Bookmarks</strong>
             <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
-              <button onClick={toggleBookmark} style={{ ...s.closeBtn, color: bookmarks.some((b) => b.page === currentPage) ? '#2f95dc' : undefined }} title="Bookmark this page">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill={bookmarks.some((b) => b.page === currentPage) ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" strokeLinejoin="round">
+              <button onClick={bmState.toggleBookmark} style={{ ...s.closeBtn, color: bmState.bookmarks.some((b) => b.page === currentPage) ? '#2f95dc' : undefined }} title="Bookmark this page">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill={bmState.bookmarks.some((b) => b.page === currentPage) ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" strokeLinejoin="round">
                   <path d="M6 4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18l-6-4-6 4V4z" />
                 </svg>
               </button>
-              <button onClick={() => setShowBookmarks(false)} style={s.closeBtn}>{'\u2715'}</button>
+              <button onClick={() => bmState.setShowBookmarks(false)} style={s.closeBtn}>{'\u2715'}</button>
             </div>
           </div>
-          {bookmarks.length === 0 ? (
+          {bmState.bookmarks.length === 0 ? (
             <div style={{ padding: '20px', textAlign: 'center', color: '#999', fontSize: '13px' }}>
               <div style={{ fontWeight: 500, marginBottom: '4px' }}>No Bookmarks</div>
               <div style={{ fontSize: '12px', opacity: 0.6 }}>Click the bookmark icon above to add one.</div>
             </div>
           ) : (
             <div style={{ overflow: 'auto', maxHeight: '300px' }}>
-              {bookmarks.sort((a, b) => a.page - b.page).map((b) => (
+              {bmState.bookmarks.sort((a, b) => a.page - b.page).map((b) => (
                 <div key={b.id} style={{ display: 'flex', borderBottom: `1px solid ${panelBorder}`, alignItems: 'center' }}>
-                  {editingBookmarkId === b.id ? (
+                  {bmState.editingBookmarkId === b.id ? (
                     <div style={{ flex: 1, padding: '8px 12px' }}>
-                      <input type="text" value={bookmarkTitleInput} onChange={(e) => setBookmarkTitleInput(e.target.value)}
-                        onKeyDown={(e) => { if (e.key === 'Enter') saveBookmarkTitle(b.id); if (e.key === 'Escape') setEditingBookmarkId(null); }}
-                        onBlur={() => saveBookmarkTitle(b.id)} placeholder="Bookmark title..." autoFocus
+                      <input type="text" value={bmState.bookmarkTitleInput} onChange={(e) => bmState.setBookmarkTitleInput(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === 'Enter') bmState.saveBookmarkTitle(b.id); if (e.key === 'Escape') bmState.setEditingBookmarkId(null); }}
+                        onBlur={() => bmState.saveBookmarkTitle(b.id)} placeholder="Bookmark title..." autoFocus
                         style={{ width: '100%', padding: '4px 8px', fontSize: '13px', border: '1px solid #ccc', borderRadius: '4px', outline: 'none', boxSizing: 'border-box' }} />
                     </div>
                   ) : (
-                    <button onClick={() => { setCurrentPage(b.page); setShowBookmarks(false); }}
+                    <button onClick={() => { setCurrentPage(b.page); bmState.setShowBookmarks(false); }}
                       style={{ flex: 1, background: 'none', border: 'none', textAlign: 'left', padding: '10px 16px', fontSize: '13px', color: themeColors.text, cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                       <span>{b.label}</span>
                       <span style={{ fontSize: '11px', color: '#999' }}>p. {b.page}</span>
                     </button>
                   )}
-                  <button onClick={() => { setEditingBookmarkId(b.id); setBookmarkTitleInput(b.label); }} style={s.closeBtn} title="Edit">
+                  <button onClick={() => { bmState.setEditingBookmarkId(b.id); bmState.setBookmarkTitleInput(b.label); }} style={s.closeBtn} title="Edit">
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" /></svg>
                   </button>
-                  <button onClick={() => setBookmarks((prev) => prev.filter((bk) => bk.id !== b.id))} style={s.closeBtn} title="Delete">{'\u2715'}</button>
+                  <button onClick={() => bmState.removeBookmark(b.id)} style={s.closeBtn} title="Delete">{'\u2715'}</button>
                 </div>
               ))}
             </div>
@@ -869,31 +678,39 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
       )}
 
       {/* Highlights dropdown */}
-      {showHighlights && (
+      {hlState.showHighlights && (
         <div style={{ ...s.dropdown, left: '12px', width: '300px', maxHeight: '500px', ...panelTheme }}>
           <div style={s.dropdownHeader}>
             <strong>Highlights & Notes</strong>
             <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
-              {highlights.length > 0 && (
-                <button onClick={exportHighlights} style={s.closeBtn} title="Export highlights">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" />
-                  </svg>
-                </button>
+              {hlState.highlights.length > 0 && (
+                <>
+                  <button onClick={hlState.handleDriveExport} disabled={hlState.isExportingDrive}
+                    style={{ ...s.closeBtn, opacity: hlState.isExportingDrive ? 0.4 : 1 }} title="Export Cornell Notes to Google Drive">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M12 2L2 7l10 5 10-5-10-5z" /><path d="M2 17l10 5 10-5" /><path d="M2 12l10 5 10-5" />
+                    </svg>
+                  </button>
+                  <button onClick={hlState.exportHighlightsAsText} style={s.closeBtn} title="Export highlights as text file">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" />
+                    </svg>
+                  </button>
+                </>
               )}
-              <button onClick={() => setShowHighlights(false)} style={s.closeBtn}>{'\u2715'}</button>
+              <button onClick={() => hlState.setShowHighlights(false)} style={s.closeBtn}>{'\u2715'}</button>
             </div>
           </div>
-          {highlights.length === 0 ? (
+          {hlState.highlights.length === 0 ? (
             <div style={{ padding: '20px', textAlign: 'center', color: '#999', fontSize: '13px' }}>
               <div style={{ fontWeight: 500, marginBottom: '4px' }}>No Highlights or Notes</div>
               <div style={{ fontSize: '12px', opacity: 0.6 }}>Select text to highlight or add notes.</div>
             </div>
           ) : (
             <div style={{ overflow: 'auto', maxHeight: '400px' }}>
-              {highlights.map((h) => (
+              {hlState.highlights.map((h) => (
                 <div key={h.id} style={{ borderBottom: `1px solid ${panelBorder}` }}>
-                  <button onClick={() => setCurrentPage(h.page)}
+                  <button onClick={() => setCurrentPage(h.page!)}
                     style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', padding: '10px 12px 4px 12px', fontSize: '13px', color: themeColors.text, cursor: 'pointer', lineHeight: '1.4' }}>
                     <span style={{ borderLeft: `3px solid ${HIGHLIGHT_COLORS[h.color]}`, paddingLeft: '8px', display: 'block' }}>
                       "{h.selectedText.length > 80 ? h.selectedText.slice(0, 80) + '...' : h.selectedText}"
@@ -901,18 +718,18 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
                   </button>
                   {h.note && <div style={{ padding: '2px 12px 2px 23px', fontSize: '12px', color: '#666', fontStyle: 'italic' }}>{h.note}</div>}
                   <div style={{ display: 'flex', gap: '8px', padding: '4px 12px 8px 23px', fontSize: '11px', color: '#999' }}>
-                    <span>Page {h.page}</span>
+                    <span>{h.pageInfo}</span>
                     <span>{h.createdAt}</span>
-                    {editingHighlightId === h.id ? (
+                    {hlState.editingHighlightId === h.id ? (
                       <span style={{ display: 'flex', gap: '4px' }}>
-                        <input type="text" value={editNoteText} onChange={(e) => setEditNoteText(e.target.value)}
-                          onKeyDown={(e) => { if (e.key === 'Enter') { setHighlights((prev) => prev.map((hl) => hl.id === h.id ? { ...hl, note: editNoteText } : hl)); setEditingHighlightId(null); } }}
+                        <input type="text" value={hlState.editNoteText} onChange={(e) => hlState.setEditNoteText(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === 'Enter') hlState.saveEditNote(); }}
                           style={{ width: '120px', fontSize: '11px', padding: '2px 4px', border: '1px solid #ccc', borderRadius: '3px' }} autoFocus />
                       </span>
                     ) : (
                       <>
-                        <button onClick={() => { setEditingHighlightId(h.id); setEditNoteText(h.note); }} style={{ ...s.actionBtn, color: '#2f95dc' }}>Edit</button>
-                        <button onClick={() => setHighlights((prev) => prev.filter((hl) => hl.id !== h.id))} style={{ ...s.actionBtn, color: '#e55' }}>Delete</button>
+                        <button onClick={() => hlState.startEditNote(h)} style={{ ...s.actionBtn, color: '#2f95dc' }}>Edit</button>
+                        <button onClick={() => hlState.removeHighlight(h.id)} style={{ ...s.actionBtn, color: '#e55' }}>Delete</button>
                       </>
                     )}
                   </div>
@@ -1003,10 +820,9 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
       </div>
 
       {/* Selection popup — draggable */}
-      {selectionPopup && (() => {
-        const px = popupPos ? popupPos.x : selectionPopup.x;
-        const py = popupPos ? popupPos.y : selectionPopup.y;
-        // Clamp within viewport
+      {hlState.selectionPopup && (() => {
+        const px = hlState.popupPos ? hlState.popupPos.x : hlState.selectionPopup.x;
+        const py = hlState.popupPos ? hlState.popupPos.y : hlState.selectionPopup.y;
         const clampedX = Math.max(8, Math.min(window.innerWidth - 288, px));
         const clampedY = Math.max(8, Math.min(window.innerHeight - 280, py));
         return (
@@ -1016,18 +832,18 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
               style={s.dragHandle}
               onMouseDown={(e) => {
                 e.preventDefault();
-                const currentX = popupPos ? popupPos.x : selectionPopup.x;
-                const currentY = popupPos ? popupPos.y : selectionPopup.y;
-                popupDragRef.current = { startX: e.clientX, startY: e.clientY, origX: currentX, origY: currentY };
+                const currentX = hlState.popupPos ? hlState.popupPos.x : hlState.selectionPopup!.x;
+                const currentY = hlState.popupPos ? hlState.popupPos.y : hlState.selectionPopup!.y;
+                hlState.popupDragRef.current = { startX: e.clientX, startY: e.clientY, origX: currentX, origY: currentY };
                 const onMove = (ev: MouseEvent) => {
-                  if (!popupDragRef.current) return;
-                  setPopupPos({
-                    x: popupDragRef.current.origX + (ev.clientX - popupDragRef.current.startX),
-                    y: popupDragRef.current.origY + (ev.clientY - popupDragRef.current.startY),
+                  if (!hlState.popupDragRef.current) return;
+                  hlState.setPopupPos({
+                    x: hlState.popupDragRef.current.origX + (ev.clientX - hlState.popupDragRef.current.startX),
+                    y: hlState.popupDragRef.current.origY + (ev.clientY - hlState.popupDragRef.current.startY),
                   });
                 };
                 const onUp = () => {
-                  popupDragRef.current = null;
+                  hlState.popupDragRef.current = null;
                   window.removeEventListener('mousemove', onMove);
                   window.removeEventListener('mouseup', onUp);
                 };
@@ -1039,19 +855,86 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
             </div>
             <div style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
               {(Object.keys(HIGHLIGHT_COLORS) as HighlightColor[]).map((color) => (
-                <button key={color} onClick={() => setSelectedColor(color)} style={{
+                <button key={color} onClick={() => hlState.setSelectedColor(color)} style={{
                   width: '24px', height: '24px', borderRadius: '50%', backgroundColor: HIGHLIGHT_COLORS[color],
-                  border: selectedColor === color ? '2px solid #333' : '2px solid transparent', cursor: 'pointer',
+                  border: hlState.selectedColor === color ? '2px solid #333' : '2px solid transparent', cursor: 'pointer',
                 }} />
               ))}
             </div>
+            {/* Define & Thesaurus toggle for short selections */}
+            {hlState.selectionPopup.selectedText.split(/\s+/).length <= 3 && (
+              <button
+                onClick={() => { if (hlState.showDict) { hlState.setShowDict(false); } else { hlState.handleDefine(hlState.selectionPopup!.selectedText.split(/\s+/)[0]); } }}
+                style={{
+                  width: '100%', marginBottom: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
+                  background: hlState.showDict ? '#2f95dc' : 'none', border: '1px solid ' + (hlState.showDict ? '#2f95dc' : '#ddd'),
+                  borderRadius: '4px', padding: '5px 12px', fontSize: '12px', cursor: 'pointer', color: hlState.showDict ? '#fff' : '#666',
+                }}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" /><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
+                </svg>
+                Define &amp; Thesaurus
+              </button>
+            )}
             <div style={{ fontSize: '12px', color: '#666', marginBottom: '8px', fontStyle: 'italic', lineHeight: '1.4' }}>
-              "{selectionPopup.text.length > 60 ? selectionPopup.text.slice(0, 60) + '...' : selectionPopup.text}"
+              "{hlState.selectionPopup.selectedText.length > 60 ? hlState.selectionPopup.selectedText.slice(0, 60) + '...' : hlState.selectionPopup.selectedText}"
             </div>
-            <textarea value={noteText} onChange={(e) => setNoteText(e.target.value)} placeholder="Add a note (optional)..."
+            {/* Dictionary / Thesaurus inline section */}
+            {hlState.showDict && (
+              <div style={{ borderTop: '1px solid #e0e0e0', marginBottom: '8px', paddingTop: '8px', maxHeight: '250px', overflow: 'auto' }}>
+                {hlState.dictLoading && <div style={{ padding: '12px', textAlign: 'center', color: '#999', fontSize: '13px' }}>Looking up...</div>}
+                {hlState.dictError && <div style={{ padding: '8px', color: '#c00', fontSize: '12px' }}>{hlState.dictError}</div>}
+                {hlState.dictResult && (
+                  <>
+                    <div style={{ marginBottom: '8px' }}>
+                      <span style={{ fontSize: '16px', fontWeight: 700 }}>{hlState.dictResult.word}</span>
+                      {hlState.dictResult.phonetic && <span style={{ marginLeft: '6px', color: '#888', fontSize: '12px' }}>{hlState.dictResult.phonetic}</span>}
+                      {hlState.dictResult.audio && (
+                        <button onClick={() => hlState.playDictAudio(hlState.dictResult!.audio!)} style={{ background: 'none', border: 'none', cursor: 'pointer', marginLeft: '4px', fontSize: '14px' }} title="Listen">{'\uD83D\uDD0A'}</button>
+                      )}
+                    </div>
+                    {hlState.dictResult.meanings.map((m, mi) => (
+                      <div key={mi} style={{ marginBottom: '8px' }}>
+                        <div style={{ fontStyle: 'italic', color: '#2f95dc', fontSize: '11px', fontWeight: 600, marginBottom: '2px' }}>{m.partOfSpeech}</div>
+                        {m.definitions.map((d, di) => (
+                          <div key={di} style={{ marginBottom: '4px', paddingLeft: '6px', fontSize: '12px' }}>
+                            <div>{di + 1}. {d.definition}</div>
+                            {d.example && <div style={{ color: '#888', fontStyle: 'italic', fontSize: '11px', marginTop: '1px' }}>"{d.example}"</div>}
+                          </div>
+                        ))}
+                      </div>
+                    ))}
+                    {hlState.dictResult.synonyms.length > 0 && (
+                      <div style={{ marginBottom: '6px', fontSize: '12px' }}>
+                        <strong style={{ color: '#2f95dc' }}>Synonyms: </strong>
+                        {hlState.dictResult.synonyms.map((syn, i) => (
+                          <span key={i}>
+                            <button onClick={() => hlState.handleDefine(syn)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#2f95dc', fontSize: '12px', padding: 0, textDecoration: 'underline' }}>{syn}</button>
+                            {i < hlState.dictResult!.synonyms.length - 1 ? ', ' : ''}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    {hlState.dictResult.antonyms.length > 0 && (
+                      <div style={{ marginBottom: '4px', fontSize: '12px' }}>
+                        <strong style={{ color: '#e57373' }}>Antonyms: </strong>
+                        {hlState.dictResult.antonyms.map((ant, i) => (
+                          <span key={i}>
+                            <button onClick={() => hlState.handleDefine(ant)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#e57373', fontSize: '12px', padding: 0, textDecoration: 'underline' }}>{ant}</button>
+                            {i < hlState.dictResult!.antonyms.length - 1 ? ', ' : ''}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
+            <textarea value={hlState.noteText} onChange={(e) => hlState.setNoteText(e.target.value)} placeholder="Add a note (optional)..."
               style={{ width: '100%', padding: '8px', fontSize: '13px', border: '1px solid #ddd', borderRadius: '4px', resize: 'vertical', fontFamily: 'inherit', boxSizing: 'border-box' }} rows={2} />
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '8px' }}>
-              <button onClick={() => setSelectionPopup(null)} style={s.cancelBtn}>Cancel</button>
+              <button onClick={() => { hlState.setSelectionPopup(null); hlState.setShowDict(false); }} style={s.cancelBtn}>Cancel</button>
               <button onClick={saveHighlight} style={s.saveBtn}>Highlight</button>
             </div>
           </div>
@@ -1080,43 +963,42 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
       {/* TTS bar — auto-hides */}
       {pageWords.length > 0 && (
         <div style={{ ...s.ttsBar, backgroundColor: themeColors.bg, borderTopColor: panelBorder, opacity: barsVisible ? 1 : 0, transition: 'opacity 0.3s', pointerEvents: barsVisible ? 'auto' as const : 'none' as const }}>
-          <button onClick={handleStop} style={s.ttsButton}>{'\u25A0'}</button>
-          <button onClick={handlePlayPause} style={{
-            ...s.ttsButton, backgroundColor: isPlaying ? '#333' : '#2f95dc',
+          <button onClick={tts.handleStop} style={s.ttsButton}>{'\u25A0'}</button>
+          <button onClick={tts.handlePlayPause} style={{
+            ...s.ttsButton, backgroundColor: tts.isPlaying ? '#333' : '#2f95dc',
             color: '#fff', padding: '6px 20px', borderRadius: '16px',
           }}>
-            {isPlaying ? '\u23F8' : '\u25B6'}
+            {tts.isPlaying ? '\u23F8' : '\u25B6'}
           </button>
-          {isEditingSpeed ? (
-            <input type="text" value={speedInput} onChange={(e) => setSpeedInput(e.target.value.replace(/[^0-9.]/g, ''))}
-              onKeyDown={(e) => { if (e.key === 'Enter') handleSpeedInputSubmit(); if (e.key === 'Escape') { setIsEditingSpeed(false); setSpeedInput(''); } }}
-              onBlur={handleSpeedInputSubmit} placeholder={String(ttsSpeed)} autoFocus style={s.speedInput} />
+          {tts.isEditingSpeed ? (
+            <input type="text" value={tts.speedInput} onChange={(e) => tts.setSpeedInput(e.target.value.replace(/[^0-9.]/g, ''))}
+              onKeyDown={(e) => { if (e.key === 'Enter') tts.handleSpeedInputSubmit(); if (e.key === 'Escape') { tts.setIsEditingSpeed(false); tts.setSpeedInput(''); } }}
+              onBlur={tts.handleSpeedInputSubmit} placeholder={String(tts.ttsSpeed)} autoFocus style={s.speedInput} />
           ) : (
-            <button onClick={() => { setIsEditingSpeed(true); setSpeedInput(''); }} style={s.speedDisplay}>{ttsSpeed}x</button>
+            <button onClick={() => { tts.setIsEditingSpeed(true); tts.setSpeedInput(''); }} style={s.speedDisplay}>{tts.ttsSpeed}x</button>
           )}
-          <input type="range" min="0.5" max="3" step="0.25" value={ttsSpeed}
+          <input type="range" min="0.5" max="3" step="0.25" value={tts.ttsSpeed}
             onChange={(e) => {
               const newSpeed = parseFloat(e.target.value);
-              setTtsSpeed(newSpeed);
-              if (isPlaying) { const r = currentWordIndex >= 0 ? currentWordIndex : 0; stopSpeaking(); startTTSFromWord(r, newSpeed); }
+              tts.handleSpeedChange(newSpeed);
             }}
             style={{ width: '80px', cursor: 'pointer', accentColor: '#2f95dc' }} />
-          {availableVoices.length > 0 && (
-            <select value={selectedVoice?.name || ''} onChange={(e) => {
-              const voice = availableVoices.find((v) => v.name === e.target.value) || null;
-              setSelectedVoice(voice); selectedVoiceRef.current = voice;
-              if (isPlaying) { const r = currentWordIndex >= 0 ? currentWordIndex : 0; stopSpeaking(); startTTSFromWord(r, ttsSpeed); }
+          {tts.availableVoices.length > 0 && (
+            <select value={tts.selectedVoice?.name || ''} onChange={(e) => {
+              const voice = tts.availableVoices.find((v) => v.name === e.target.value) || null;
+              tts.setSelectedVoice(voice); tts.selectedVoiceRef.current = voice;
+              if (tts.isPlaying) { const r = tts.currentWordIndex >= 0 ? tts.currentWordIndex : 0; stopSpeaking(); tts.startTTSFromWord(r, tts.ttsSpeed); }
             }} style={s.voiceSelect}>
               <option value="">Default voice</option>
-              {favoriteVoiceNames.length > 0 && availableVoices.some((v) => favoriteVoiceNames.includes(v.name)) && (
+              {tts.favoriteVoiceNames.length > 0 && tts.availableVoices.some((v) => tts.favoriteVoiceNames.includes(v.name)) && (
                 <optgroup label="Favorites">
-                  {availableVoices.filter((v) => favoriteVoiceNames.includes(v.name)).map((v) => (
+                  {tts.availableVoices.filter((v) => tts.favoriteVoiceNames.includes(v.name)).map((v) => (
                     <option key={v.name} value={v.name}>{v.name} ({v.lang})</option>
                   ))}
                 </optgroup>
               )}
               <optgroup label="All voices">
-                {availableVoices.filter((v) => !favoriteVoiceNames.includes(v.name)).map((v) => (
+                {tts.availableVoices.filter((v) => !tts.favoriteVoiceNames.includes(v.name)).map((v) => (
                   <option key={v.name} value={v.name}>{v.name} ({v.lang})</option>
                 ))}
               </optgroup>
