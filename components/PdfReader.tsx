@@ -271,8 +271,28 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
 
       await page.render({ canvasContext: context, viewport }).promise;
 
-      // Extract text
+      // Build a selectable text layer on top of the canvas
       const textContent = await page.getTextContent();
+      const textLayer = textLayerRef.current;
+      if (textLayer) {
+        textLayer.innerHTML = '';
+        textLayer.style.width = `${viewport.width}px`;
+        textLayer.style.height = `${viewport.height}px`;
+
+        const pdfjsLib = await import('pdfjs-dist');
+        // @ts-ignore — renderTextLayer exists in pdfjs-dist
+        const { renderTextLayer } = pdfjsLib;
+        if (renderTextLayer) {
+          await renderTextLayer({
+            textContentSource: textContent,
+            container: textLayer,
+            viewport,
+            textDivs: [],
+          }).promise;
+        }
+      }
+
+      // Extract text for TTS
       const fullText = textContent.items.map((item: any) => item.str).join(' ').replace(/\s+/g, ' ').trim();
       const words = fullText.split(/\s+/).filter((w: string) => w.length > 0);
       setPageWords(words);
@@ -539,7 +559,12 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
 
   return (
     <div style={{ ...s.container, backgroundColor: themeColors.bg }}>
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+      <style>{`
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .textLayer { opacity: 0.25; line-height: 1; }
+        .textLayer span { position: absolute; white-space: pre; color: transparent; }
+        .textLayer ::selection { background: rgba(0, 100, 200, 0.3); }
+      `}</style>
       {/* Progress bar */}
       <div style={s.progressTrack}>
         <div style={{ ...s.progressFill, width: `${Math.round(progress * 100)}%` }} />
@@ -846,7 +871,7 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
           )}
           <div style={{ position: 'relative', display: 'inline-block' }}>
             <canvas ref={canvasRef} style={{ display: 'block', boxShadow: '0 2px 8px rgba(0,0,0,0.1)', opacity: isRendering ? 0.4 : 1, transition: 'opacity 0.2s' }} />
-            <div ref={textLayerRef} style={{ position: 'absolute', top: 0, left: 0, overflow: 'hidden' }} />
+            <div ref={textLayerRef} className="textLayer" style={{ position: 'absolute', top: 0, left: 0, overflow: 'hidden' }} />
           </div>
           {/* Current TTS word indicator */}
           {wordHighlightPos && (
