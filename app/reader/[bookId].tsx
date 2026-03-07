@@ -11,7 +11,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { StyleSheet, Pressable, Platform } from 'react-native';
 import { useLocalSearchParams, router } from 'expo-router';
-import { Asset } from 'expo-asset';
 
 import { Text, View } from '@/components/Themed';
 import {
@@ -21,6 +20,7 @@ import {
   resumeSpeaking,
   getAvailableVoices,
 } from '@/lib/tts-engine';
+import { getBookUrl, fetchBooks } from '@/lib/api';
 
 type HighlightColor = 'yellow' | 'blue' | 'green' | 'pink';
 
@@ -69,6 +69,7 @@ export default function ReaderScreen() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [locationInfo, setLocationInfo] = useState('');
+  const [bookTitle, setBookTitle] = useState('');
 
   // Page tracking
   const [currentPage, setCurrentPage] = useState(1);
@@ -472,13 +473,18 @@ export default function ReaderScreen() {
 
   async function loadBook() {
     try {
-      const asset = Asset.fromModule(
-        require('../../assets/test-books/huawei-ai-textbook.epub')
-      );
-      await asset.downloadAsync();
+      // Fetch book metadata to get filename, then load the file from server
+      const allBooks = await fetchBooks();
+      const bookMeta = allBooks.find((b) => b.id === bookId);
+      if (!bookMeta) {
+        setError('Book not found');
+        setIsLoading(false);
+        return;
+      }
+      setBookTitle(bookMeta.title);
 
-      const uri = asset.localUri || asset.uri;
-      const response = await fetch(uri);
+      const bookUrl = getBookUrl(bookMeta.filename);
+      const response = await fetch(bookUrl);
       const arrayBuffer = await response.arrayBuffer();
 
       const ePub = (await import('epubjs')).default;
@@ -967,7 +973,7 @@ export default function ReaderScreen() {
             </button>
           </div>
 
-          <span style={{ ...webStyles.bookTitle, color: themes[activeTheme].text }}>Artificial Intelligence Technology</span>
+          <span style={{ ...webStyles.bookTitle, color: themes[activeTheme].text }}>{bookTitle || 'Loading...'}</span>
 
           <div style={webStyles.topBarRight}>
             {/* Search */}
