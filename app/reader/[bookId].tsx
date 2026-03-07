@@ -180,6 +180,13 @@ export default function ReaderScreen() {
   // Keyboard shortcuts help
   const [showShortcuts, setShowShortcuts] = useState(false);
 
+  // Auto-hide bars
+  const [barsVisible, setBarsVisible] = useState(true);
+  const barsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Toast notifications
+  const [toast, setToast] = useState<string | null>(null);
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   // Keep ttsSpeed ref in sync
   useEffect(() => { ttsSpeedRef.current = ttsSpeed; }, [ttsSpeed]);
   useEffect(() => { currentWordIndexRef.current = currentWordIndex; }, [currentWordIndex]);
@@ -246,6 +253,29 @@ export default function ReaderScreen() {
       }
     }
   }, [currentWordIndex]);
+
+  // Auto-hide bars after 3s of inactivity
+  function resetBarsTimer() {
+    setBarsVisible(true);
+    if (barsTimerRef.current) clearTimeout(barsTimerRef.current);
+    barsTimerRef.current = setTimeout(() => setBarsVisible(false), 3000);
+  }
+  useEffect(() => {
+    if (Platform.OS !== 'web') return;
+    function handleMouseMove() { resetBarsTimer(); }
+    window.addEventListener('mousemove', handleMouseMove);
+    resetBarsTimer();
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      if (barsTimerRef.current) clearTimeout(barsTimerRef.current);
+    };
+  }, []);
+
+  function showToast(msg: string) {
+    setToast(msg);
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = setTimeout(() => setToast(null), 2000);
+  }
 
   useEffect(() => {
     if (Platform.OS !== 'web') return;
@@ -467,6 +497,7 @@ export default function ReaderScreen() {
     };
 
     setHighlights((prev) => [...prev, highlight]);
+    showToast('Highlight saved');
 
     // Apply visual highlight in the iframe
     if (selectionPopup.range) {
@@ -639,7 +670,10 @@ export default function ReaderScreen() {
       }
 
       rendition.on('relocated', (location: any) => {
-        setSelectionPopup(null); // Fix #5: clear stale popup on page change
+        setSelectionPopup(null);
+        // Track last-read book and progress for library UI
+        localStorage.setItem('reader-lastReadId', bookId!);
+        localStorage.setItem('reader-lastReadTime', String(Date.now()));
         const current = location.start?.displayed;
         if (current) {
           setCurrentPage(current.page);
@@ -653,6 +687,7 @@ export default function ReaderScreen() {
         }
         if (location.start?.percentage != null) {
           setBookProgress(location.start.percentage);
+          localStorage.setItem(storageKey('progress'), String(location.start.percentage));
         }
       });
 
@@ -790,6 +825,7 @@ export default function ReaderScreen() {
     const existing = bookmarks.find((b) => b.page === currentPage);
     if (existing) {
       setBookmarks((prev) => prev.filter((b) => b.id !== existing.id));
+      showToast('Bookmark removed');
     } else {
       const newId = bookmarkIdRef.current++;
       setBookmarks((prev) => [
@@ -1010,11 +1046,16 @@ export default function ReaderScreen() {
           <div style={{ ...webStyles.progressBarFill, width: `${Math.round(bookProgress * 100)}%` }} />
         </div>
 
-        {/* Top bar */}
+        <style>{`@keyframes fadeInOut { 0% { opacity: 0; transform: translateX(-50%) translateY(8px); } 10% { opacity: 1; transform: translateX(-50%) translateY(0); } 80% { opacity: 1; } 100% { opacity: 0; } }`}</style>
+
+        {/* Top bar — auto-hides */}
         <div style={{
           ...webStyles.topBar,
           backgroundColor: themes[activeTheme].bg,
           borderBottomColor: activeTheme === 'quiet' ? '#555' : '#e8e8e8',
+          opacity: barsVisible ? 1 : 0,
+          transition: 'opacity 0.3s',
+          pointerEvents: barsVisible ? 'auto' as const : 'none' as const,
         }}>
           <div style={webStyles.topBarLeft}>
             <button onClick={() => router.back()} style={webStyles.iconButton} title="Back">
@@ -1630,8 +1671,13 @@ export default function ReaderScreen() {
 
         </div>
 
-        {/* Page navigation bar */}
-        <div style={{ ...webStyles.pageBar, backgroundColor: themes[activeTheme].bg, borderTopColor: activeTheme === 'quiet' ? '#555' : '#f0f0f0' }}>
+        {/* Toast notification */}
+        {toast && (
+          <div style={{ position: 'fixed', bottom: '80px', left: '50%', transform: 'translateX(-50%)', backgroundColor: 'rgba(0,0,0,0.75)', color: '#fff', padding: '8px 20px', borderRadius: '20px', fontSize: '13px', fontWeight: 500, zIndex: 200, pointerEvents: 'none', animation: 'fadeInOut 2s ease' }}>{toast}</div>
+        )}
+
+        {/* Page navigation bar — auto-hides */}
+        <div style={{ ...webStyles.pageBar, backgroundColor: themes[activeTheme].bg, borderTopColor: activeTheme === 'quiet' ? '#555' : '#f0f0f0', opacity: barsVisible ? 1 : 0, transition: 'opacity 0.3s', pointerEvents: barsVisible ? 'auto' as const : 'none' as const }}>
           <button onClick={prevPage} style={webStyles.pageArrow} title="Previous page">
             {'\u2039'}
           </button>
@@ -1679,7 +1725,7 @@ export default function ReaderScreen() {
 
         {/* TTS Player */}
         {wordsReady && (
-          <div style={{ ...webStyles.ttsBar, backgroundColor: themes[activeTheme].bg, borderTopColor: activeTheme === 'quiet' ? '#555' : '#eee' }}>
+          <div style={{ ...webStyles.ttsBar, backgroundColor: themes[activeTheme].bg, borderTopColor: activeTheme === 'quiet' ? '#555' : '#eee', opacity: barsVisible ? 1 : 0, transition: 'opacity 0.3s', pointerEvents: barsVisible ? 'auto' as const : 'none' as const }}>
             <button onClick={handleStop} style={webStyles.ttsButton}>
               {'\u25A0'}
             </button>

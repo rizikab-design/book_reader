@@ -142,6 +142,13 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
   // Keyboard shortcuts
   const [showShortcuts, setShowShortcuts] = useState(false);
 
+  // Auto-hide bars
+  const [barsVisible, setBarsVisible] = useState(true);
+  const barsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Toast notifications
+  const [toast, setToast] = useState<string | null>(null);
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   // TOC
   const [tocItems, setTocItems] = useState<{ title: string; page: number }[]>([]);
   const [showToc, setShowToc] = useState(false);
@@ -163,7 +170,14 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
   useEffect(() => { localStorage.setItem(storageKey('highlights'), JSON.stringify(highlights)); localStorage.setItem(storageKey('highlightNextId'), JSON.stringify(highlightIdRef.current)); }, [highlights]);
   useEffect(() => { localStorage.setItem('reader-global-theme', JSON.stringify(activeTheme)); }, [activeTheme]);
   useEffect(() => { localStorage.setItem('reader-global-fontSize', JSON.stringify(fontSize)); }, [fontSize]);
-  useEffect(() => { localStorage.setItem(storageKey('page'), String(currentPage)); }, [currentPage]);
+  useEffect(() => {
+    localStorage.setItem(storageKey('page'), String(currentPage));
+    if (totalPages > 0) {
+      localStorage.setItem(storageKey('progress'), String(currentPage / totalPages));
+    }
+    localStorage.setItem('reader-lastReadId', bookId);
+    localStorage.setItem('reader-lastReadTime', String(Date.now()));
+  }, [currentPage, totalPages]);
   useEffect(() => { localStorage.setItem(storageKey('pdfScale'), JSON.stringify(scale)); }, [scale]);
 
   // Load voices
@@ -457,6 +471,7 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
     const existing = bookmarks.find((b) => b.page === currentPage);
     if (existing) {
       setBookmarks((prev) => prev.filter((b) => b.page !== currentPage));
+      showToast('Bookmark removed');
     } else {
       const newId = ++bookmarkIdRef.current;
       setBookmarks((prev) => [...prev, { id: newId, page: currentPage, label: `Page ${currentPage}` }]);
@@ -489,6 +504,7 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
     setHighlights((prev) => [...prev, h]);
     setSelectionPopup(null);
     setNoteText('');
+    showToast('Highlight saved');
   }
 
   function exportHighlights() {
@@ -611,6 +627,28 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
+  // Auto-hide bars after 3s of inactivity
+  function resetBarsTimer() {
+    setBarsVisible(true);
+    if (barsTimerRef.current) clearTimeout(barsTimerRef.current);
+    barsTimerRef.current = setTimeout(() => setBarsVisible(false), 3000);
+  }
+  useEffect(() => {
+    function handleMouseMove() { resetBarsTimer(); }
+    window.addEventListener('mousemove', handleMouseMove);
+    resetBarsTimer();
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      if (barsTimerRef.current) clearTimeout(barsTimerRef.current);
+    };
+  }, []);
+
+  function showToast(msg: string) {
+    setToast(msg);
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = setTimeout(() => setToast(null), 2000);
+  }
+
   // Cleanup TTS
   useEffect(() => { return () => stopSpeaking(); }, []);
 
@@ -629,6 +667,7 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
     <div style={{ ...s.container, backgroundColor: themeColors.bg }}>
       <style>{`
         @keyframes spin { to { transform: rotate(360deg); } }
+        @keyframes fadeInOut { 0% { opacity: 0; transform: translateX(-50%) translateY(8px); } 10% { opacity: 1; transform: translateX(-50%) translateY(0); } 80% { opacity: 1; } 100% { opacity: 0; } }
         .textLayer { line-height: 1; }
         .textLayer span { position: absolute; white-space: pre; color: transparent; }
         .textLayer ::selection { background: rgba(47, 149, 220, 0.35); }
@@ -642,8 +681,8 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
         <div style={{ ...s.progressFill, width: `${Math.round(progress * 100)}%` }} />
       </div>
 
-      {/* Top bar */}
-      <div style={{ ...s.topBar, backgroundColor: themeColors.bg, borderBottomColor: panelBorder }}>
+      {/* Top bar — auto-hides */}
+      <div style={{ ...s.topBar, backgroundColor: themeColors.bg, borderBottomColor: panelBorder, opacity: barsVisible ? 1 : 0, transition: 'opacity 0.3s', pointerEvents: barsVisible ? 'auto' as const : 'none' as const }}>
         <div style={s.topBarLeft}>
           <button onClick={() => router.back()} style={s.iconButton}>
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="15 18 9 12 15 6" /></svg>
@@ -1019,8 +1058,13 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
         );
       })()}
 
-      {/* Page bar */}
-      <div style={{ ...s.pageBar, backgroundColor: themeColors.bg, borderTopColor: panelBorder }}>
+      {/* Toast notification */}
+      {toast && (
+        <div style={s.toast}>{toast}</div>
+      )}
+
+      {/* Page bar — auto-hides */}
+      <div style={{ ...s.pageBar, backgroundColor: themeColors.bg, borderTopColor: panelBorder, opacity: barsVisible ? 1 : 0, transition: 'opacity 0.3s', pointerEvents: barsVisible ? 'auto' as const : 'none' as const }}>
         <button onClick={prevPage} style={s.pageArrow}>{'\u2039'}</button>
         <button onClick={() => {
           const input = prompt(`Go to page (1-${totalPages}):`, String(currentPage));
@@ -1033,9 +1077,9 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
         <span style={s.pagesLeftLabel}>{Math.round(progress * 100)}% of book</span>
       </div>
 
-      {/* TTS bar */}
+      {/* TTS bar — auto-hides */}
       {pageWords.length > 0 && (
-        <div style={{ ...s.ttsBar, backgroundColor: themeColors.bg, borderTopColor: panelBorder }}>
+        <div style={{ ...s.ttsBar, backgroundColor: themeColors.bg, borderTopColor: panelBorder, opacity: barsVisible ? 1 : 0, transition: 'opacity 0.3s', pointerEvents: barsVisible ? 'auto' as const : 'none' as const }}>
           <button onClick={handleStop} style={s.ttsButton}>{'\u25A0'}</button>
           <button onClick={handlePlayPause} style={{
             ...s.ttsButton, backgroundColor: isPlaying ? '#333' : '#2f95dc',
@@ -1131,4 +1175,5 @@ const s: Record<string, React.CSSProperties> = {
   dragDots: { width: '32px', height: '4px', borderRadius: '2px', backgroundColor: '#ccc' },
   renderingOverlay: { position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', zIndex: 10 },
   spinner: { width: '32px', height: '32px', border: '3px solid #e0e0e0', borderTopColor: '#2f95dc', borderRadius: '50%', animation: 'spin 0.8s linear infinite' },
+  toast: { position: 'fixed', bottom: '80px', left: '50%', transform: 'translateX(-50%)', backgroundColor: 'rgba(0,0,0,0.75)', color: '#fff', padding: '8px 20px', borderRadius: '20px', fontSize: '13px', fontWeight: 500, zIndex: 200, pointerEvents: 'none', animation: 'fadeInOut 2s ease' },
 };

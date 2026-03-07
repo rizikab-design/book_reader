@@ -5,20 +5,39 @@ import { router } from 'expo-router';
 import { Text, View } from '@/components/Themed';
 import { fetchBooks, uploadBook, deleteBook, getCoverUrl, BookEntry } from '@/lib/api';
 
+interface BookWithProgress extends BookEntry {
+  progress: number; // 0-1
+}
+
 export default function LibraryScreen() {
-  const [books, setBooks] = useState<BookEntry[]>([]);
+  const [books, setBooks] = useState<BookWithProgress[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [lastReadId, setLastReadId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const loadBooks = useCallback(async () => {
     try {
       setError(null);
       const data = await fetchBooks();
-      setBooks(data);
+      // Attach reading progress from localStorage
+      const withProgress: BookWithProgress[] = data.map((book) => {
+        let progress = 0;
+        try {
+          const stored = localStorage.getItem(`reader-${book.id}-progress`);
+          if (stored) progress = parseFloat(stored) || 0;
+        } catch {}
+        return { ...book, progress };
+      });
+      setBooks(withProgress);
+      // Load last-read book ID
+      try {
+        const lrId = localStorage.getItem('reader-lastReadId');
+        setLastReadId(lrId);
+      } catch {}
     } catch (e: any) {
       setError('Could not connect to server. Make sure the server is running (cd server && npm start).');
     } finally {
@@ -82,6 +101,8 @@ export default function LibraryScreen() {
     );
   }
 
+  const lastReadBook = lastReadId ? books.find((b) => b.id === lastReadId) : null;
+
   return (
     <div
       style={{
@@ -92,6 +113,14 @@ export default function LibraryScreen() {
       onDragLeave={() => setDragOver(false)}
       onDrop={handleDrop}
     >
+      <style>{`
+        .book-cover-btn:hover { transform: scale(1.04); box-shadow: 0 4px 16px rgba(0,0,0,0.22) !important; }
+        .book-cover-btn { transition: transform 0.15s ease, box-shadow 0.15s ease; }
+        .delete-btn { opacity: 0; transition: opacity 0.15s ease; }
+        .book-card:hover .delete-btn { opacity: 0.7; }
+        .delete-btn:hover { opacity: 1 !important; }
+      `}</style>
+
       <div style={webStyles.header}>
         <h1 style={webStyles.title}>My Library</h1>
         <button
@@ -118,6 +147,41 @@ export default function LibraryScreen() {
         </div>
       )}
 
+      {/* Continue Reading banner */}
+      {lastReadBook && lastReadBook.progress > 0 && lastReadBook.progress < 0.99 && (
+        <button
+          onClick={() => router.push(`/reader/${lastReadBook.id}`)}
+          style={webStyles.continueReading}
+        >
+          <div style={webStyles.continueLeft}>
+            {lastReadBook.coverFile ? (
+              <img
+                src={getCoverUrl(lastReadBook.coverFile)}
+                alt={lastReadBook.title}
+                style={webStyles.continueCover}
+              />
+            ) : (
+              <div style={webStyles.continueCoverPlaceholder}>
+                <span style={{ fontSize: '20px', fontWeight: 700, color: '#fff', opacity: 0.7 }}>
+                  {lastReadBook.title.charAt(0).toUpperCase()}
+                </span>
+              </div>
+            )}
+            <div style={webStyles.continueInfo}>
+              <div style={{ fontSize: '11px', color: '#999', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Continue Reading</div>
+              <div style={{ fontSize: '15px', fontWeight: 600, color: '#333', marginTop: '2px' }}>{lastReadBook.title}</div>
+              <div style={{ fontSize: '12px', color: '#999', marginTop: '2px' }}>{lastReadBook.author}</div>
+            </div>
+          </div>
+          <div style={webStyles.continueRight}>
+            <div style={webStyles.continueProgress}>
+              <div style={{ ...webStyles.continueProgressFill, width: `${Math.round(lastReadBook.progress * 100)}%` }} />
+            </div>
+            <div style={{ fontSize: '11px', color: '#999', marginTop: '4px' }}>{Math.round(lastReadBook.progress * 100)}% complete</div>
+          </div>
+        </button>
+      )}
+
       {isLoading ? (
         <div style={webStyles.emptyState}>Loading...</div>
       ) : books.length === 0 ? (
@@ -130,14 +194,15 @@ export default function LibraryScreen() {
           </div>
           <div style={webStyles.emptyTitle}>No books yet</div>
           <div style={webStyles.emptyDesc}>
-            Drag and drop an ePub file here, or click "Add Book" to get started.
+            Drag and drop an ePub or PDF file here, or click "Add Book" to get started.
           </div>
         </div>
       ) : (
         <div style={webStyles.grid}>
           {books.map((book) => (
-            <div key={book.id} style={webStyles.bookCard}>
+            <div key={book.id} className="book-card" style={webStyles.bookCard}>
               <button
+                className="book-cover-btn"
                 onClick={() => router.push(`/reader/${book.id}`)}
                 style={webStyles.coverButton}
               >
@@ -158,6 +223,12 @@ export default function LibraryScreen() {
                   {book.format?.toUpperCase() || 'EPUB'}
                 </span>
               </button>
+              {/* Reading progress bar on cover */}
+              {book.progress > 0 && (
+                <div style={webStyles.coverProgressTrack}>
+                  <div style={{ ...webStyles.coverProgressFill, width: `${Math.round(book.progress * 100)}%` }} />
+                </div>
+              )}
               <div style={webStyles.bookInfo}>
                 <div style={webStyles.bookTitle} title={book.title}>
                   {book.title}
@@ -165,8 +236,9 @@ export default function LibraryScreen() {
                 <div style={webStyles.bookAuthor}>{book.author}</div>
               </div>
               <button
+                className="delete-btn"
                 onClick={() => handleDelete(book.id, book.title)}
-                style={{ ...webStyles.deleteButton, opacity: deletingId === book.id ? 1 : 0.6 }}
+                style={webStyles.deleteButton}
                 title="Remove from library"
                 aria-label={`Delete ${book.title}`}
                 disabled={deletingId === book.id}
@@ -180,7 +252,7 @@ export default function LibraryScreen() {
 
       {dragOver && (
         <div style={webStyles.dropOverlay}>
-          <div style={webStyles.dropMessage}>Drop ePub file here</div>
+          <div style={webStyles.dropMessage}>Drop file here</div>
         </div>
       )}
     </div>
@@ -201,7 +273,7 @@ const webStyles: Record<string, React.CSSProperties> = {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: '32px',
+    marginBottom: '24px',
   },
   title: {
     fontSize: '28px',
@@ -238,6 +310,69 @@ const webStyles: Record<string, React.CSSProperties> = {
     fontSize: '14px',
     padding: '4px',
   },
+  // Continue Reading banner
+  continueReading: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    width: '100%',
+    padding: '16px 20px',
+    marginBottom: '28px',
+    background: 'linear-gradient(135deg, #f8f9fa, #eef2f7)',
+    border: '1px solid #e4e8ec',
+    borderRadius: '12px',
+    cursor: 'pointer',
+    textAlign: 'left' as const,
+    transition: 'box-shadow 0.15s',
+  },
+  continueLeft: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '16px',
+    flex: 1,
+    minWidth: 0,
+  },
+  continueCover: {
+    width: '44px',
+    height: '62px',
+    objectFit: 'cover' as const,
+    borderRadius: '4px',
+    boxShadow: '0 1px 4px rgba(0,0,0,0.15)',
+    flexShrink: 0,
+  },
+  continueCoverPlaceholder: {
+    width: '44px',
+    height: '62px',
+    backgroundColor: '#667',
+    borderRadius: '4px',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  continueInfo: {
+    flex: 1,
+    minWidth: 0,
+  },
+  continueRight: {
+    textAlign: 'right' as const,
+    flexShrink: 0,
+    marginLeft: '20px',
+  },
+  continueProgress: {
+    width: '80px',
+    height: '4px',
+    backgroundColor: '#ddd',
+    borderRadius: '2px',
+    overflow: 'hidden',
+    marginLeft: 'auto',
+  },
+  continueProgressFill: {
+    height: '100%',
+    backgroundColor: '#2f95dc',
+    borderRadius: '2px',
+    transition: 'width 0.3s',
+  },
   emptyState: {
     display: 'flex',
     flexDirection: 'column',
@@ -265,7 +400,7 @@ const webStyles: Record<string, React.CSSProperties> = {
   grid: {
     display: 'grid',
     gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))',
-    gap: '24px',
+    gap: '28px',
   },
   bookCard: {
     position: 'relative',
@@ -281,9 +416,9 @@ const webStyles: Record<string, React.CSSProperties> = {
     borderRadius: '8px',
     overflow: 'hidden',
     boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
-    transition: 'transform 0.15s, box-shadow 0.15s',
     width: '140px',
     height: '200px',
+    position: 'relative',
   },
   coverImage: {
     width: '140px',
@@ -304,6 +439,19 @@ const webStyles: Record<string, React.CSSProperties> = {
     fontWeight: 700,
     color: '#fff',
     opacity: 0.7,
+  },
+  coverProgressTrack: {
+    width: '140px',
+    height: '3px',
+    backgroundColor: '#e0e0e0',
+    borderRadius: '0 0 4px 4px',
+    overflow: 'hidden',
+    marginTop: '-1px',
+  },
+  coverProgressFill: {
+    height: '100%',
+    backgroundColor: '#2f95dc',
+    borderRadius: '0 2px 2px 0',
   },
   bookInfo: {
     marginTop: '8px',
