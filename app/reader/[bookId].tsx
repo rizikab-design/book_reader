@@ -1559,10 +1559,10 @@ export default function ReaderScreen() {
                     if (!popupDragRef.current) return;
                     const dx = ev.clientX - popupDragRef.current.startX;
                     const dy = ev.clientY - popupDragRef.current.startY;
-                    setPopupPos({
-                      x: popupDragRef.current.origX + dx,
-                      y: popupDragRef.current.origY + dy,
-                    });
+                    // Clamp within viewport bounds
+                    const newX = Math.max(8, Math.min(window.innerWidth - 288, popupDragRef.current.origX + dx));
+                    const newY = Math.max(8, Math.min(window.innerHeight - 280, popupDragRef.current.origY + dy));
+                    setPopupPos({ x: newX, y: newY });
                   };
                   const onUp = () => {
                     popupDragRef.current = null;

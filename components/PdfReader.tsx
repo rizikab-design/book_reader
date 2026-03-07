@@ -127,6 +127,10 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
   const [editingHighlightId, setEditingHighlightId] = useState<number | null>(null);
   const [editNoteText, setEditNoteText] = useState('');
 
+  // Popup drag state
+  const [popupPos, setPopupPos] = useState<{ x: number; y: number } | null>(null);
+  const popupDragRef = useRef<{ startX: number; startY: number; origX: number; origY: number } | null>(null);
+
   // Search
   const [showSearch, setShowSearch] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -253,6 +257,45 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
     } catch { return ''; }
   }
 
+  // Apply saved highlights to text layer spans for a given page
+  function applyHighlightsToTextLayer(pageNum: number, textLayer: HTMLDivElement | null) {
+    if (!textLayer) return;
+    const pageHighlights = highlights.filter((h) => h.page === pageNum);
+    if (pageHighlights.length === 0) return;
+
+    const spans = textLayer.querySelectorAll('span');
+    if (spans.length === 0) return;
+
+    // Build full text from spans to find highlight positions
+    for (const h of pageHighlights) {
+      const hLower = h.selectedText.toLowerCase();
+      // Walk through spans finding matching text sequences
+      let accumulated = '';
+      let spanTexts: { span: HTMLSpanElement; start: number; text: string }[] = [];
+      spans.forEach((span) => {
+        const text = span.textContent || '';
+        spanTexts.push({ span: span as HTMLSpanElement, start: accumulated.length, text });
+        accumulated += text;
+      });
+
+      const accLower = accumulated.toLowerCase();
+      let searchFrom = 0;
+      while (true) {
+        const idx = accLower.indexOf(hLower, searchFrom);
+        if (idx === -1) break;
+        const endIdx = idx + hLower.length;
+        // Mark all spans that overlap with [idx, endIdx)
+        for (const st of spanTexts) {
+          const spanEnd = st.start + st.text.length;
+          if (st.start < endIdx && spanEnd > idx) {
+            st.span.classList.add(`pdf-highlight-${h.color}`);
+          }
+        }
+        searchFrom = idx + 1; // find next occurrence too
+      }
+    }
+  }
+
   // Load visible thumbnails when panel opens
   useEffect(() => {
     if (!showThumbnails || !pdfDocRef.current) return;
@@ -315,6 +358,9 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
       wordsRef.current = words;
       resumeWordIndexRef.current = -1;
       setCurrentWordIndex(-1);
+
+      // Re-apply saved highlights to text layer spans
+      applyHighlightsToTextLayer(pageNum, textLayer);
     } catch (e) {
       console.warn('Page render error:', e);
     }
@@ -476,6 +522,7 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
         const popupX = Math.min(e.clientX, window.innerWidth - 160);
         const popupY = Math.min(e.clientY + 10, window.innerHeight - 300);
         setSelectionPopup({ x: popupX, y: popupY, text });
+        setPopupPos(null); // reset drag offset on new selection
       }
     }
     window.addEventListener('mouseup', handleMouseUp);
@@ -582,9 +629,13 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
     <div style={{ ...s.container, backgroundColor: themeColors.bg }}>
       <style>{`
         @keyframes spin { to { transform: rotate(360deg); } }
-        .textLayer { opacity: 0.25; line-height: 1; }
+        .textLayer { line-height: 1; }
         .textLayer span { position: absolute; white-space: pre; color: transparent; }
-        .textLayer ::selection { background: rgba(0, 100, 200, 0.3); }
+        .textLayer ::selection { background: rgba(47, 149, 220, 0.35); }
+        .textLayer .pdf-highlight-yellow { background-color: rgba(255, 235, 59, 0.35); border-radius: 2px; }
+        .textLayer .pdf-highlight-blue { background-color: rgba(144, 202, 249, 0.35); border-radius: 2px; }
+        .textLayer .pdf-highlight-green { background-color: rgba(165, 214, 167, 0.35); border-radius: 2px; }
+        .textLayer .pdf-highlight-pink { background-color: rgba(244, 143, 177, 0.35); border-radius: 2px; }
       `}</style>
       {/* Progress bar */}
       <div style={s.progressTrack}>
@@ -912,28 +963,61 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
         </button>
       </div>
 
-      {/* Selection popup */}
-      {selectionPopup && (
-        <div data-popup style={{ ...s.selectionPopup, left: selectionPopup.x, top: selectionPopup.y, ...panelTheme }}>
-          <div style={{ display: 'flex', gap: '8px', marginBottom: '8px', marginTop: '12px' }}>
-            {(Object.keys(HIGHLIGHT_COLORS) as HighlightColor[]).map((color) => (
-              <button key={color} onClick={() => setSelectedColor(color)} style={{
-                width: '24px', height: '24px', borderRadius: '50%', backgroundColor: HIGHLIGHT_COLORS[color],
-                border: selectedColor === color ? '2px solid #333' : '2px solid transparent', cursor: 'pointer',
-              }} />
-            ))}
+      {/* Selection popup — draggable */}
+      {selectionPopup && (() => {
+        const px = popupPos ? popupPos.x : selectionPopup.x;
+        const py = popupPos ? popupPos.y : selectionPopup.y;
+        // Clamp within viewport
+        const clampedX = Math.max(8, Math.min(window.innerWidth - 288, px));
+        const clampedY = Math.max(8, Math.min(window.innerHeight - 280, py));
+        return (
+          <div data-popup style={{ ...s.selectionPopup, left: clampedX, top: clampedY, ...panelTheme }}>
+            {/* Drag handle */}
+            <div
+              style={s.dragHandle}
+              onMouseDown={(e) => {
+                e.preventDefault();
+                const currentX = popupPos ? popupPos.x : selectionPopup.x;
+                const currentY = popupPos ? popupPos.y : selectionPopup.y;
+                popupDragRef.current = { startX: e.clientX, startY: e.clientY, origX: currentX, origY: currentY };
+                const onMove = (ev: MouseEvent) => {
+                  if (!popupDragRef.current) return;
+                  setPopupPos({
+                    x: popupDragRef.current.origX + (ev.clientX - popupDragRef.current.startX),
+                    y: popupDragRef.current.origY + (ev.clientY - popupDragRef.current.startY),
+                  });
+                };
+                const onUp = () => {
+                  popupDragRef.current = null;
+                  window.removeEventListener('mousemove', onMove);
+                  window.removeEventListener('mouseup', onUp);
+                };
+                window.addEventListener('mousemove', onMove);
+                window.addEventListener('mouseup', onUp);
+              }}
+            >
+              <div style={s.dragDots} />
+            </div>
+            <div style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
+              {(Object.keys(HIGHLIGHT_COLORS) as HighlightColor[]).map((color) => (
+                <button key={color} onClick={() => setSelectedColor(color)} style={{
+                  width: '24px', height: '24px', borderRadius: '50%', backgroundColor: HIGHLIGHT_COLORS[color],
+                  border: selectedColor === color ? '2px solid #333' : '2px solid transparent', cursor: 'pointer',
+                }} />
+              ))}
+            </div>
+            <div style={{ fontSize: '12px', color: '#666', marginBottom: '8px', fontStyle: 'italic', lineHeight: '1.4' }}>
+              "{selectionPopup.text.length > 60 ? selectionPopup.text.slice(0, 60) + '...' : selectionPopup.text}"
+            </div>
+            <textarea value={noteText} onChange={(e) => setNoteText(e.target.value)} placeholder="Add a note (optional)..."
+              style={{ width: '100%', padding: '8px', fontSize: '13px', border: '1px solid #ddd', borderRadius: '4px', resize: 'vertical', fontFamily: 'inherit', boxSizing: 'border-box' }} rows={2} />
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '8px' }}>
+              <button onClick={() => setSelectionPopup(null)} style={s.cancelBtn}>Cancel</button>
+              <button onClick={saveHighlight} style={s.saveBtn}>Highlight</button>
+            </div>
           </div>
-          <div style={{ fontSize: '12px', color: '#666', marginBottom: '8px', fontStyle: 'italic', lineHeight: '1.4' }}>
-            "{selectionPopup.text.length > 60 ? selectionPopup.text.slice(0, 60) + '...' : selectionPopup.text}"
-          </div>
-          <textarea value={noteText} onChange={(e) => setNoteText(e.target.value)} placeholder="Add a note (optional)..."
-            style={{ width: '100%', padding: '8px', fontSize: '13px', border: '1px solid #ddd', borderRadius: '4px', resize: 'vertical', fontFamily: 'inherit', boxSizing: 'border-box' }} rows={2} />
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '8px' }}>
-            <button onClick={() => setSelectionPopup(null)} style={s.cancelBtn}>Cancel</button>
-            <button onClick={saveHighlight} style={s.saveBtn}>Highlight</button>
-          </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* Page bar */}
       <div style={{ ...s.pageBar, backgroundColor: themeColors.bg, borderTopColor: panelBorder }}>
@@ -1043,6 +1127,8 @@ const s: Record<string, React.CSSProperties> = {
   thumbnailItem: { background: 'none', cursor: 'pointer', padding: '4px', borderRadius: '4px', display: 'flex', flexDirection: 'column', alignItems: 'center' },
   thumbnailImg: { width: '100%', height: 'auto', borderRadius: '2px', display: 'block' },
   thumbnailPlaceholder: { width: '100%', aspectRatio: '0.7', backgroundColor: '#f0f0f0', borderRadius: '2px', display: 'flex', alignItems: 'center', justifyContent: 'center' },
+  dragHandle: { cursor: 'grab', padding: '6px 0 4px 0', display: 'flex', justifyContent: 'center', userSelect: 'none' as const },
+  dragDots: { width: '32px', height: '4px', borderRadius: '2px', backgroundColor: '#ccc' },
   renderingOverlay: { position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', zIndex: 10 },
   spinner: { width: '32px', height: '32px', border: '3px solid #e0e0e0', borderTopColor: '#2f95dc', borderRadius: '50%', animation: 'spin 0.8s linear infinite' },
 };
