@@ -105,6 +105,8 @@ export default function ReaderScreen() {
   const currentWordIndexRef = useRef<number>(-1);
   const isPlayingRef = useRef(false);
   const ttsGenRef = useRef(0);
+  // Track iframe listeners for cleanup on page turn
+  const iframeListenersRef = useRef<{ doc: Document; type: string; handler: any }[]>([]);
 
   // Speed editing
   const [isEditingSpeed, setIsEditingSpeed] = useState(false);
@@ -148,6 +150,7 @@ export default function ReaderScreen() {
   const [highlights, setHighlights] = useState<Highlight[]>(() => loadStored('highlights', []));
   const [showSidebar, setShowSidebar] = useState(false);
   const highlightIdRef = useRef(loadStored<number>('highlightNextId', 0));
+  const highlightsRef = useRef<Highlight[]>(highlights);
 
   // Selection popup
   const [selectionPopup, setSelectionPopup] = useState<SelectionPopup | null>(null);
@@ -172,6 +175,7 @@ export default function ReaderScreen() {
   const [searchResults, setSearchResults] = useState<{ cfi: string; excerpt: string }[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const searchCancelRef = useRef(false);
 
   // Keyboard shortcuts help
   const [showShortcuts, setShowShortcuts] = useState(false);
@@ -180,6 +184,7 @@ export default function ReaderScreen() {
   useEffect(() => { ttsSpeedRef.current = ttsSpeed; }, [ttsSpeed]);
   useEffect(() => { currentWordIndexRef.current = currentWordIndex; }, [currentWordIndex]);
   useEffect(() => { isPlayingRef.current = isPlaying; }, [isPlaying]);
+  useEffect(() => { highlightsRef.current = highlights; }, [highlights]);
 
   // Load available voices and favorites
   const [favoriteVoiceNames, setFavoriteVoiceNames] = useState<string[]>([]);
@@ -246,7 +251,10 @@ export default function ReaderScreen() {
     if (Platform.OS !== 'web') return;
     loadBook();
     return () => {
-      if (renditionRef.current) renditionRef.current.destroy();
+      cleanupIframeListeners();
+      if (renditionRef.current) {
+        try { renditionRef.current.destroy(); } catch {}
+      }
     };
   }, []);
 
@@ -330,8 +338,21 @@ export default function ReaderScreen() {
    * Handle a click on a word span — start TTS from that word.
    * We distinguish clicks from drags: a click has a collapsed (empty) selection.
    */
+  // Clean up old iframe listeners before attaching new ones
+  function cleanupIframeListeners() {
+    for (const entry of iframeListenersRef.current) {
+      try { entry.doc.removeEventListener(entry.type, entry.handler); } catch {}
+    }
+    iframeListenersRef.current = [];
+  }
+
+  function addIframeListener(doc: Document, type: string, handler: any) {
+    doc.addEventListener(type, handler);
+    iframeListenersRef.current.push({ doc, type, handler });
+  }
+
   function setupWordClickListener(doc: Document) {
-    doc.addEventListener('click', (e: MouseEvent) => {
+    const handler = (e: MouseEvent) => {
       const target = e.target as HTMLElement;
       const ttsIdx = target.getAttribute?.('data-tts-idx');
       if (ttsIdx === null || ttsIdx === undefined) return;
@@ -350,11 +371,12 @@ export default function ReaderScreen() {
       resumeWordIndexRef.current = wordIndex;
       setCurrentWordIndex(wordIndex);
       startTTSFromWordRef.current(wordIndex, ttsSpeedRef.current);
-    });
+    };
+    addIframeListener(doc, 'click', handler);
   }
 
   function setupSelectionListener(doc: Document) {
-    doc.addEventListener('mouseup', () => {
+    const handler = () => {
       // Small delay to let the browser finalize the selection
       setTimeout(() => {
         const selection = doc.getSelection();
@@ -391,7 +413,8 @@ export default function ReaderScreen() {
         setNoteText('');
         setSelectedColor('yellow');
       }, 10);
-    });
+    };
+    addIframeListener(doc, 'mouseup', handler);
   }
 
   /**
@@ -408,16 +431,23 @@ export default function ReaderScreen() {
       range.surroundContents(span);
     } catch (e) {
       // surroundContents fails if selection crosses element boundaries
-      // Fallback: highlight the word spans within the range
+      // Fallback: highlight word spans that intersect the selection range
       const container = range.commonAncestorContainer;
       const parent = container.nodeType === 3 ? container.parentElement : container as Element;
-      if (parent) {
+      if (parent && iframeDoc) {
         const wordSpans = parent.querySelectorAll('[data-tts-idx]');
-        const rangeText = range.toString();
         wordSpans.forEach((span) => {
-          if (rangeText.includes(span.textContent || '')) {
-            (span as HTMLElement).classList.add(`user-highlight-${color}`);
-          }
+          try {
+            const spanRange = iframeDoc.createRange();
+            spanRange.selectNodeContents(span);
+            // Check if this span's range intersects the selection range
+            const intersects =
+              range.compareBoundaryPoints(Range.START_TO_END, spanRange) > 0 &&
+              range.compareBoundaryPoints(Range.END_TO_START, spanRange) < 0;
+            if (intersects) {
+              (span as HTMLElement).classList.add(`user-highlight-${color}`);
+            }
+          } catch {}
         });
       }
     }
@@ -518,6 +548,9 @@ export default function ReaderScreen() {
         try {
           const doc = contents.document;
           if (doc) {
+            // Fix #1: Clean up old iframe listeners before adding new ones
+            cleanupIframeListeners();
+
             const words = injectWordSpans(doc);
             iframeWordsArrayRef.current = words;
             iframeWordsRef.current = words.join(' ');
@@ -545,6 +578,31 @@ export default function ReaderScreen() {
             // Listen for text selection and word clicks in the iframe
             setupSelectionListener(doc);
             setupWordClickListener(doc);
+
+            // Fix #6: Re-apply saved highlights to this page's word spans
+            const currentHighlights = highlightsRef.current;
+            if (currentHighlights.length > 0 && words.length > 0) {
+              const pageText = words.join(' ').toLowerCase();
+              for (const h of currentHighlights) {
+                const hLower = h.selectedText.toLowerCase();
+                if (pageText.includes(hLower)) {
+                  // Find matching word spans and apply highlight class
+                  const hWords = h.selectedText.split(/\s+/);
+                  for (let i = 0; i <= words.length - hWords.length; i++) {
+                    const match = hWords.every((hw, j) =>
+                      words[i + j].toLowerCase() === hw.toLowerCase()
+                    );
+                    if (match) {
+                      for (let j = 0; j < hWords.length; j++) {
+                        const span = doc.querySelector(`[data-tts-idx="${i + j}"]`);
+                        if (span) (span as HTMLElement).classList.add(`user-highlight-${h.color}`);
+                      }
+                      break;
+                    }
+                  }
+                }
+              }
+            }
 
             // Auto-continue TTS on new page if it was playing
             if (isPlayingRef.current) {
@@ -581,6 +639,7 @@ export default function ReaderScreen() {
       }
 
       rendition.on('relocated', (location: any) => {
+        setSelectionPopup(null); // Fix #5: clear stale popup on page change
         const current = location.start?.displayed;
         if (current) {
           setCurrentPage(current.page);
@@ -778,34 +837,37 @@ export default function ReaderScreen() {
     }
   }
 
-  // Search within book
+  // Search within book (with cancellation)
   async function handleSearch(query: string) {
     if (!bookRef.current || !query.trim()) {
       setSearchResults([]);
       return;
     }
+    searchCancelRef.current = false;
     setIsSearching(true);
     try {
       const book = bookRef.current;
       await book.ready;
-      // epub.js provides a search method on each spine section
       const results: { cfi: string; excerpt: string }[] = [];
       const spineItems: any[] = [];
       book.spine.each((item: any) => spineItems.push(item));
 
       for (const item of spineItems) {
+        if (searchCancelRef.current) break;
         await item.load(book.load.bind(book));
         const found = await item.find(query.trim());
         for (const r of found) {
           results.push({ cfi: r.cfi, excerpt: r.excerpt });
         }
         item.unload();
-        if (results.length >= 50) break; // cap results
+        if (results.length >= 50) break;
       }
-      setSearchResults(results);
+      if (!searchCancelRef.current) {
+        setSearchResults(results);
+      }
     } catch (e) {
       console.warn('Search failed:', e);
-      setSearchResults([]);
+      if (!searchCancelRef.current) setSearchResults([]);
     }
     setIsSearching(false);
   }
@@ -1101,7 +1163,7 @@ export default function ReaderScreen() {
           <div style={{ ...webStyles.searchPanel, ...panelTheme }} data-popup>
             <div style={webStyles.tocHeader}>
               <strong>Search</strong>
-              <button onClick={() => { setShowSearch(false); setSearchQuery(''); setSearchResults([]); }} style={webStyles.iconButtonSmall}>
+              <button onClick={() => { searchCancelRef.current = true; setShowSearch(false); setSearchQuery(''); setSearchResults([]); }} style={webStyles.iconButtonSmall}>
                 {'\u2715'}
               </button>
             </div>
@@ -1132,7 +1194,12 @@ export default function ReaderScreen() {
                     }}
                     style={webStyles.tocItem}
                   >
-                    {r.excerpt.replace(/<[^>]*>/g, '')}
+                    <span dangerouslySetInnerHTML={{
+                      __html: r.excerpt.replace(/<[^>]*>/g, '').replace(
+                        new RegExp(`(${searchQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi'),
+                        '<mark style="background:#FFEB3B;padding:0 1px;border-radius:2px">$1</mark>'
+                      )
+                    }} />
                   </button>
                 ))}
               </div>

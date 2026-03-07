@@ -47,6 +47,15 @@ const themes: Record<ThemeName, { label: string; bg: string; text: string; fontW
   focus: { label: 'Focus', bg: '#faf5e4', text: '#3a3a2a', fontFamily: 'Georgia, serif' },
 };
 
+const MAX_SEARCH_RESULTS = 50;
+const SEARCH_EXCERPT_CONTEXT = 30;
+const THUMBNAIL_SCALE = 0.3;
+const THUMBNAIL_CACHE_LIMIT = 50;
+const MIN_ZOOM = 0.5;
+const MAX_ZOOM = 4;
+const ZOOM_STEP = 0.1;
+const MIN_SELECTION_LENGTH = 3;
+
 interface PdfReaderProps {
   bookUrl: string;
   bookId: string;
@@ -124,6 +133,7 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
   const [searchResults, setSearchResults] = useState<{ page: number; text: string }[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const searchCancelRef = useRef(false);
 
   // Keyboard shortcuts
   const [showShortcuts, setShowShortcuts] = useState(false);
@@ -226,13 +236,18 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
     if (!pdf) return '';
     try {
       const page = await pdf.getPage(pageNum);
-      const viewport = page.getViewport({ scale: 0.3 });
+      const viewport = page.getViewport({ scale: THUMBNAIL_SCALE });
       const canvas = document.createElement('canvas');
       canvas.width = viewport.width;
       canvas.height = viewport.height;
       const ctx = canvas.getContext('2d')!;
       await page.render({ canvasContext: ctx, viewport }).promise;
       const url = canvas.toDataURL('image/jpeg', 0.6);
+      // LRU eviction: remove oldest entries if cache exceeds limit
+      if (thumbnailCacheRef.current.size >= THUMBNAIL_CACHE_LIMIT) {
+        const firstKey = thumbnailCacheRef.current.keys().next().value;
+        if (firstKey !== undefined) thumbnailCacheRef.current.delete(firstKey);
+      }
       thumbnailCacheRef.current.set(pageNum, url);
       return url;
     } catch { return ''; }
@@ -310,6 +325,7 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
     if (!isLoading && pdfDocRef.current) {
       stopSpeaking();
       setIsPlaying(false);
+      setSelectionPopup(null); // Fix #5: clear stale popup on page change
       renderPage(currentPage);
     }
   }, [currentPage, isLoading, renderPage]);
@@ -456,7 +472,7 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
 
       const sel = window.getSelection();
       const text = sel?.toString().trim();
-      if (text && text.length > 2) {
+      if (text && text.length >= MIN_SELECTION_LENGTH) {
         const popupX = Math.min(e.clientX, window.innerWidth - 160);
         const popupY = Math.min(e.clientY + 10, window.innerHeight - 300);
         setSelectionPopup({ x: popupX, y: popupY, text });
@@ -466,28 +482,32 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
     return () => window.removeEventListener('mouseup', handleMouseUp);
   }, []);
 
-  // Search
+  // Search with cancellation
   async function handleSearch(query: string) {
     if (!pdfDocRef.current || !query.trim()) { setSearchResults([]); return; }
+    searchCancelRef.current = false;
     setIsSearching(true);
     const results: { page: number; text: string }[] = [];
     const pdf = pdfDocRef.current;
     const lowerQuery = query.toLowerCase();
-    for (let i = 1; i <= pdf.numPages && results.length < 50; i++) {
+    for (let i = 1; i <= pdf.numPages && results.length < MAX_SEARCH_RESULTS; i++) {
+      if (searchCancelRef.current) break;
       try {
         const page = await pdf.getPage(i);
         const textContent = await page.getTextContent();
         const pageText = textContent.items.map((item: any) => item.str).join(' ');
         if (pageText.toLowerCase().includes(lowerQuery)) {
           const idx = pageText.toLowerCase().indexOf(lowerQuery);
-          const start = Math.max(0, idx - 30);
-          const end = Math.min(pageText.length, idx + query.length + 30);
+          const start = Math.max(0, idx - SEARCH_EXCERPT_CONTEXT);
+          const end = Math.min(pageText.length, idx + query.length + SEARCH_EXCERPT_CONTEXT);
           const excerpt = (start > 0 ? '...' : '') + pageText.slice(start, end) + (end < pageText.length ? '...' : '');
           results.push({ page: i, text: excerpt });
         }
       } catch {}
     }
-    setSearchResults(results);
+    if (!searchCancelRef.current) {
+      setSearchResults(results);
+    }
     setIsSearching(false);
   }
 
@@ -517,7 +537,7 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
       if (e.ctrlKey || e.metaKey) {
         e.preventDefault();
         setScale((prev) => {
-          const next = Math.max(0.5, Math.min(4, prev + (e.deltaY < 0 ? 0.1 : -0.1)));
+          const next = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, prev + (e.deltaY < 0 ? ZOOM_STEP : -ZOOM_STEP)));
           return Math.round(next * 100) / 100;
         });
       }
@@ -662,7 +682,7 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
         <div style={{ ...s.dropdown, right: '100px', ...panelTheme }}>
           <div style={s.dropdownHeader}>
             <strong>Search</strong>
-            <button onClick={() => { setShowSearch(false); setSearchQuery(''); setSearchResults([]); }} style={s.closeBtn}>{'\u2715'}</button>
+            <button onClick={() => { searchCancelRef.current = true; setShowSearch(false); setSearchQuery(''); setSearchResults([]); }} style={s.closeBtn}>{'\u2715'}</button>
           </div>
           <div style={{ padding: '8px 12px' }}>
             <input ref={searchInputRef} type="text" value={searchQuery}
@@ -675,7 +695,12 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
             <div style={{ overflow: 'auto', maxHeight: '350px' }}>
               {searchResults.map((r, i) => (
                 <button key={i} onClick={() => setCurrentPage(r.page)} style={s.tocItem}>
-                  <div style={{ fontSize: '12px' }}>{r.text}</div>
+                  <div style={{ fontSize: '12px' }} dangerouslySetInnerHTML={{
+                    __html: r.text.replace(
+                      new RegExp(`(${searchQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi'),
+                      '<mark style="background:#FFEB3B;padding:0 1px;border-radius:2px">$1</mark>'
+                    )
+                  }} />
                   <div style={{ fontSize: '10px', color: '#999', marginTop: '2px' }}>Page {r.page}</div>
                 </button>
               ))}

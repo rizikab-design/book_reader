@@ -11,6 +11,7 @@ export default function LibraryScreen() {
   const [error, setError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [dragOver, setDragOver] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const loadBooks = useCallback(async () => {
@@ -55,12 +56,14 @@ export default function LibraryScreen() {
 
   async function handleDelete(id: string, title: string) {
     if (!window.confirm(`Delete "${title}" from your library?`)) return;
+    setDeletingId(id);
     try {
       await deleteBook(id);
       await loadBooks();
     } catch (e: any) {
       setError(e.message);
     }
+    setDeletingId(null);
   }
 
   function handleDrop(e: React.DragEvent) {
@@ -95,6 +98,7 @@ export default function LibraryScreen() {
           onClick={() => fileInputRef.current?.click()}
           style={webStyles.uploadButton}
           disabled={uploading}
+          aria-label="Upload a book"
         >
           {uploading ? 'Uploading...' : '+ Add Book'}
         </button>
@@ -162,10 +166,12 @@ export default function LibraryScreen() {
               </div>
               <button
                 onClick={() => handleDelete(book.id, book.title)}
-                style={webStyles.deleteButton}
+                style={{ ...webStyles.deleteButton, opacity: deletingId === book.id ? 1 : 0.6 }}
                 title="Remove from library"
+                aria-label={`Delete ${book.title}`}
+                disabled={deletingId === book.id}
               >
-                {'\u2715'}
+                {deletingId === book.id ? '...' : '\u2715'}
               </button>
             </div>
           ))}
@@ -335,7 +341,6 @@ const webStyles: Record<string, React.CSSProperties> = {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    opacity: 0.6,
   },
   dropOverlay: {
     position: 'fixed',

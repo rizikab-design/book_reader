@@ -16,6 +16,15 @@ const DB_FILE = path.join(__dirname, 'library.json');
 fs.mkdirSync(BOOKS_DIR, { recursive: true });
 fs.mkdirSync(COVERS_DIR, { recursive: true });
 
+// --- Simple file lock to prevent race conditions on library.json ---
+let libraryLock = Promise.resolve();
+
+function withLibraryLock(fn) {
+  const next = libraryLock.then(fn, fn);
+  libraryLock = next.catch(() => {}); // prevent unhandled rejection
+  return next;
+}
+
 // Initialize library DB
 function loadLibrary() {
   try {
@@ -29,8 +38,17 @@ function saveLibrary(books) {
   fs.writeFileSync(DB_FILE, JSON.stringify(books, null, 2));
 }
 
-// Middleware
-app.use(cors());
+// Middleware — restrict CORS to localhost origins
+app.use(cors({
+  origin: (origin, callback) => {
+    // Allow requests with no origin (curl, server-to-server) or localhost
+    if (!origin || /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+}));
 app.use(express.json());
 app.use('/books', express.static(BOOKS_DIR));
 app.use('/covers', express.static(COVERS_DIR));
@@ -67,7 +85,7 @@ app.get('/api/books', (req, res) => {
   res.json(books);
 });
 
-// Upload a book
+// Upload a book (locked to prevent concurrent writes)
 app.post('/api/books', upload.single('file'), async (req, res) => {
   try {
     if (!req.file) {
@@ -82,9 +100,16 @@ app.post('/api/books', upload.single('file'), async (req, res) => {
     const format = ext === '.pdf' ? 'pdf' : 'epub';
 
     // Extract metadata and cover
-    const metadata = format === 'pdf'
-      ? await extractPdfMetadata(bookPath, bookFilename)
-      : await extractEpubMetadata(bookPath, bookFilename);
+    let metadata;
+    try {
+      metadata = format === 'pdf'
+        ? await extractPdfMetadata(bookPath, bookFilename)
+        : await extractEpubMetadata(bookPath, bookFilename);
+    } catch (err) {
+      // Metadata extraction failed — clean up orphaned file
+      try { fs.unlinkSync(bookPath); } catch {}
+      return res.status(500).json({ error: 'Failed to process book file' });
+    }
 
     const book = {
       id: Date.now().toString(),
@@ -98,37 +123,75 @@ app.post('/api/books', upload.single('file'), async (req, res) => {
       fileSize: req.file.size,
     };
 
-    const library = loadLibrary();
-    library.push(book);
-    saveLibrary(library);
+    await withLibraryLock(() => {
+      const library = loadLibrary();
+      library.push(book);
+      saveLibrary(library);
+    });
 
     res.json(book);
   } catch (err) {
     console.error('Upload error:', err);
+    // Clean up uploaded file on failure
+    if (req.file?.path) {
+      try { fs.unlinkSync(req.file.path); } catch {}
+    }
     res.status(500).json({ error: err.message || 'Upload failed' });
   }
 });
 
-// Delete a book
-app.delete('/api/books/:id', (req, res) => {
-  const library = loadLibrary();
-  const book = library.find((b) => b.id === req.params.id);
-  if (!book) return res.status(404).json({ error: 'Book not found' });
+// Delete a book (locked to prevent concurrent writes)
+app.delete('/api/books/:id', async (req, res) => {
+  try {
+    const result = await withLibraryLock(() => {
+      const library = loadLibrary();
+      const book = library.find((b) => b.id === req.params.id);
+      if (!book) return null;
 
-  // Delete files
-  const bookPath = path.join(BOOKS_DIR, book.filename);
-  if (fs.existsSync(bookPath)) fs.unlinkSync(bookPath);
-  if (book.coverFile) {
-    const coverPath = path.join(COVERS_DIR, book.coverFile);
-    if (fs.existsSync(coverPath)) fs.unlinkSync(coverPath);
+      // Delete files
+      const bookPath = path.join(BOOKS_DIR, book.filename);
+      try { if (fs.existsSync(bookPath)) fs.unlinkSync(bookPath); } catch (e) {
+        console.warn('Failed to delete book file:', e.message);
+      }
+      if (book.coverFile) {
+        const coverPath = path.join(COVERS_DIR, book.coverFile);
+        try { if (fs.existsSync(coverPath)) fs.unlinkSync(coverPath); } catch (e) {
+          console.warn('Failed to delete cover file:', e.message);
+        }
+      }
+
+      const updated = library.filter((b) => b.id !== req.params.id);
+      saveLibrary(updated);
+      return { ok: true };
+    });
+
+    if (!result) return res.status(404).json({ error: 'Book not found' });
+    res.json(result);
+  } catch (err) {
+    console.error('Delete error:', err);
+    res.status(500).json({ error: 'Failed to delete book' });
   }
-
-  const updated = library.filter((b) => b.id !== req.params.id);
-  saveLibrary(updated);
-  res.json({ ok: true });
 });
 
-// --- ePub metadata extraction ---
+// --- ePub metadata extraction (improved XML parsing) ---
+
+function getTagContent(xml, tagName) {
+  // Handles namespaced tags like dc:title and self-closing tags
+  const regex = new RegExp(`<${tagName}[^>]*>([^<]*)</${tagName}>`, 'i');
+  const match = xml.match(regex);
+  return match ? match[1].trim() : '';
+}
+
+function getAttributeValue(tag, attrName) {
+  const regex = new RegExp(`${attrName}="([^"]*)"`, 'i');
+  const match = tag.match(regex);
+  return match ? match[1] : '';
+}
+
+function findAllTags(xml, tagName) {
+  const regex = new RegExp(`<${tagName}[^>]*(?:/>|>[^<]*</${tagName}>)`, 'gi');
+  return xml.match(regex) || [];
+}
 
 async function extractEpubMetadata(bookPath, bookFilename) {
   const result = { title: '', author: '', coverFile: null };
@@ -150,6 +213,7 @@ async function extractEpubMetadata(bookPath, bookFilename) {
       if (rootfileMatch) {
         const opfPath = rootfileMatch[1];
         opfDir = path.dirname(opfPath);
+        if (opfDir === '.') opfDir = '';
         const opfEntry = entries.find(e => e.entryName === opfPath);
         if (opfEntry) {
           opfContent = opfEntry.getData().toString('utf-8');
@@ -163,46 +227,54 @@ async function extractEpubMetadata(bookPath, bookFilename) {
       if (opfEntry) {
         opfContent = opfEntry.getData().toString('utf-8');
         opfDir = path.dirname(opfEntry.entryName);
+        if (opfDir === '.') opfDir = '';
       }
     }
 
     if (opfContent) {
-      // Extract title
-      const titleMatch = opfContent.match(/<dc:title[^>]*>([^<]+)<\/dc:title>/i);
-      if (titleMatch) result.title = titleMatch[1].trim();
+      // Extract title and author
+      result.title = getTagContent(opfContent, 'dc:title');
+      result.author = getTagContent(opfContent, 'dc:creator');
 
-      // Extract author
-      const authorMatch = opfContent.match(/<dc:creator[^>]*>([^<]+)<\/dc:creator>/i);
-      if (authorMatch) result.author = authorMatch[1].trim();
-
-      // Find cover image
-      // Method 1: meta name="cover" content="cover-image-id"
-      const coverMetaMatch = opfContent.match(/<meta\s+name="cover"\s+content="([^"]+)"/i)
-        || opfContent.match(/<meta\s+content="([^"]+)"\s+name="cover"/i);
+      // Find cover image — parse all <item> tags into a lookup
+      const itemTags = findAllTags(opfContent, 'item');
+      const items = itemTags.map(tag => ({
+        id: getAttributeValue(tag, 'id'),
+        href: getAttributeValue(tag, 'href'),
+        mediaType: getAttributeValue(tag, 'media-type'),
+        properties: getAttributeValue(tag, 'properties'),
+      }));
 
       let coverHref = '';
-      if (coverMetaMatch) {
-        const coverId = coverMetaMatch[1];
-        const itemRegex = new RegExp(`<item[^>]*id="${coverId}"[^>]*href="([^"]+)"`, 'i');
-        const itemMatch = opfContent.match(itemRegex);
-        if (itemMatch) coverHref = itemMatch[1];
+
+      // Method 1: meta name="cover" content="cover-image-id"
+      const metaTags = findAllTags(opfContent, 'meta');
+      for (const meta of metaTags) {
+        if (getAttributeValue(meta, 'name') === 'cover') {
+          const coverId = getAttributeValue(meta, 'content');
+          const item = items.find(i => i.id === coverId);
+          if (item) coverHref = item.href;
+          break;
+        }
       }
 
       // Method 2: item with properties="cover-image"
       if (!coverHref) {
-        const coverPropMatch = opfContent.match(/<item[^>]*properties="cover-image"[^>]*href="([^"]+)"/i);
-        if (coverPropMatch) coverHref = coverPropMatch[1];
+        const coverItem = items.find(i => i.properties === 'cover-image');
+        if (coverItem) coverHref = coverItem.href;
       }
 
       // Method 3: item with id containing "cover" and image media type
       if (!coverHref) {
-        const coverIdMatch = opfContent.match(/<item[^>]*id="[^"]*cover[^"]*"[^>]*href="([^"]+)"[^>]*media-type="image\/[^"]+"/i);
-        if (coverIdMatch) coverHref = coverIdMatch[1];
+        const coverItem = items.find(i =>
+          i.id.toLowerCase().includes('cover') && i.mediaType.startsWith('image/')
+        );
+        if (coverItem) coverHref = coverItem.href;
       }
 
       if (coverHref) {
-        // Resolve path relative to OPF directory
-        const coverEntryPath = opfDir ? `${opfDir}/${coverHref}` : coverHref;
+        // Resolve path relative to OPF directory, normalizing double slashes
+        const coverEntryPath = opfDir ? path.posix.join(opfDir, coverHref) : coverHref;
         const coverEntry = entries.find(e =>
           e.entryName === coverEntryPath || e.entryName === coverHref
         );
@@ -237,10 +309,6 @@ async function extractPdfMetadata(bookPath, bookFilename) {
       result.title = data.info.Title || '';
       result.author = data.info.Author || '';
     }
-
-    // For PDF cover, we'll generate a placeholder based on the title
-    // (Server-side PDF-to-image rendering requires heavy dependencies like canvas/sharp)
-    // The client will show a styled placeholder for PDFs without covers
   } catch (err) {
     console.warn('PDF metadata extraction warning:', err.message);
   }

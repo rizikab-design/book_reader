@@ -1,6 +1,7 @@
 // API client for the local book server
 
 const API_BASE = 'http://localhost:3001';
+const FETCH_TIMEOUT = 30000; // 30s timeout for all requests
 
 export interface BookEntry {
   id: string;
@@ -14,8 +15,14 @@ export interface BookEntry {
   fileSize: number;
 }
 
+function fetchWithTimeout(url: string, options?: RequestInit): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT);
+  return fetch(url, { ...options, signal: controller.signal }).finally(() => clearTimeout(timer));
+}
+
 export async function fetchBooks(): Promise<BookEntry[]> {
-  const res = await fetch(`${API_BASE}/api/books`);
+  const res = await fetchWithTimeout(`${API_BASE}/api/books`);
   if (!res.ok) throw new Error('Failed to fetch books');
   return res.json();
 }
@@ -23,7 +30,7 @@ export async function fetchBooks(): Promise<BookEntry[]> {
 export async function uploadBook(file: File): Promise<BookEntry> {
   const formData = new FormData();
   formData.append('file', file);
-  const res = await fetch(`${API_BASE}/api/books`, {
+  const res = await fetchWithTimeout(`${API_BASE}/api/books`, {
     method: 'POST',
     body: formData,
   });
@@ -35,7 +42,7 @@ export async function uploadBook(file: File): Promise<BookEntry> {
 }
 
 export async function deleteBook(id: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/api/books/${id}`, { method: 'DELETE' });
+  const res = await fetchWithTimeout(`${API_BASE}/api/books/${encodeURIComponent(id)}`, { method: 'DELETE' });
   if (!res.ok) throw new Error('Failed to delete book');
 }
 
