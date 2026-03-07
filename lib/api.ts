@@ -9,6 +9,7 @@ export interface BookEntry {
   title: string;
   author: string;
   coverFile: string | null;
+  format: 'epub' | 'pdf';
   addedAt: string;
   fileSize: number;
 }

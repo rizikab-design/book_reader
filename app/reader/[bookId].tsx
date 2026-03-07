@@ -20,7 +20,8 @@ import {
   resumeSpeaking,
   getAvailableVoices,
 } from '@/lib/tts-engine';
-import { getBookUrl, fetchBooks } from '@/lib/api';
+import { getBookUrl, fetchBooks, BookEntry } from '@/lib/api';
+import PdfReader from '@/components/PdfReader';
 
 type HighlightColor = 'yellow' | 'blue' | 'green' | 'pink';
 
@@ -70,6 +71,7 @@ export default function ReaderScreen() {
   const [error, setError] = useState<string | null>(null);
   const [locationInfo, setLocationInfo] = useState('');
   const [bookTitle, setBookTitle] = useState('');
+  const [bookMeta, setBookMeta] = useState<BookEntry | null>(null);
 
   // Page tracking
   const [currentPage, setCurrentPage] = useState(1);
@@ -482,6 +484,13 @@ export default function ReaderScreen() {
         return;
       }
       setBookTitle(bookMeta.title);
+      setBookMeta(bookMeta);
+
+      // PDF books use a separate reader component
+      if (bookMeta.format === 'pdf') {
+        setIsLoading(false);
+        return;
+      }
 
       const bookUrl = getBookUrl(bookMeta.filename);
       const response = await fetch(bookUrl);
@@ -920,6 +929,17 @@ export default function ReaderScreen() {
   const panelBorder = activeTheme === 'quiet' ? '#555' : '#f0f0f0';
 
   // --- Web rendering ---
+  // PDF books use a dedicated reader component
+  if (Platform.OS === 'web' && bookMeta?.format === 'pdf') {
+    return (
+      <PdfReader
+        bookUrl={getBookUrl(bookMeta.filename)}
+        bookId={bookId!}
+        bookTitle={bookTitle}
+      />
+    );
+  }
+
   if (Platform.OS === 'web') {
     return (
       <div style={{ ...webStyles.container, backgroundColor: themes[activeTheme].bg }}>

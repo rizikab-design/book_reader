@@ -31,8 +31,9 @@ export default function LibraryScreen() {
   }, [loadBooks]);
 
   async function handleUpload(file: File) {
-    if (!file.name.toLowerCase().endsWith('.epub')) {
-      setError('Only .epub files are supported');
+    const lower = file.name.toLowerCase();
+    if (!lower.endsWith('.epub') && !lower.endsWith('.pdf')) {
+      setError('Only .epub and .pdf files are supported');
       return;
     }
     setUploading(true);
@@ -100,7 +101,7 @@ export default function LibraryScreen() {
         <input
           ref={fileInputRef}
           type="file"
-          accept=".epub"
+          accept=".epub,.pdf"
           onChange={handleFileSelect}
           style={{ display: 'none' }}
         />
@@ -149,6 +150,9 @@ export default function LibraryScreen() {
                     </span>
                   </div>
                 )}
+                <span style={webStyles.formatBadge}>
+                  {book.format?.toUpperCase() || 'EPUB'}
+                </span>
               </button>
               <div style={webStyles.bookInfo}>
                 <div style={webStyles.bookTitle} title={book.title}>
@@ -346,6 +350,18 @@ const webStyles: Record<string, React.CSSProperties> = {
     justifyContent: 'center',
     zIndex: 100,
     pointerEvents: 'none',
+  },
+  formatBadge: {
+    position: 'absolute',
+    bottom: '6px',
+    right: '6px',
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    color: '#fff',
+    fontSize: '9px',
+    fontWeight: 700,
+    padding: '2px 6px',
+    borderRadius: '3px',
+    letterSpacing: '0.5px',
   },
   dropMessage: {
     fontSize: '24px',

@@ -24,6 +24,7 @@
     "expo-status-bar": "~55.0.4",
     "expo-symbols": "~55.0.5",
     "expo-web-browser": "~55.0.9",
+    "pdfjs-dist": "^3.11.174",
     "react": "19.2.0",
     "react-dom": "19.2.0",
     "react-native": "0.83.2",

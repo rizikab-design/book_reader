@@ -50,10 +50,10 @@ const upload = multer({
   storage,
   fileFilter: (req, file, cb) => {
     const ext = path.extname(file.originalname).toLowerCase();
-    if (ext === '.epub') {
+    if (ext === '.epub' || ext === '.pdf') {
       cb(null, true);
     } else {
-      cb(new Error('Only .epub files are supported'));
+      cb(new Error('Only .epub and .pdf files are supported'));
     }
   },
   limits: { fileSize: 100 * 1024 * 1024 }, // 100MB
@@ -78,16 +78,22 @@ app.post('/api/books', upload.single('file'), async (req, res) => {
     const bookFilename = req.file.filename;
     const originalName = req.file.originalname;
 
-    // Extract metadata and cover from the ePub
-    const metadata = await extractEpubMetadata(bookPath, bookFilename);
+    const ext = path.extname(originalName).toLowerCase();
+    const format = ext === '.pdf' ? 'pdf' : 'epub';
+
+    // Extract metadata and cover
+    const metadata = format === 'pdf'
+      ? await extractPdfMetadata(bookPath, bookFilename)
+      : await extractEpubMetadata(bookPath, bookFilename);
 
     const book = {
       id: Date.now().toString(),
       filename: bookFilename,
       originalName,
-      title: metadata.title || originalName.replace(/\.epub$/i, ''),
+      title: metadata.title || originalName.replace(/\.(epub|pdf)$/i, ''),
       author: metadata.author || 'Unknown',
       coverFile: metadata.coverFile || null,
+      format,
       addedAt: new Date().toISOString(),
       fileSize: req.file.size,
     };
@@ -212,6 +218,31 @@ async function extractEpubMetadata(bookPath, bookFilename) {
     }
   } catch (err) {
     console.warn('Metadata extraction warning:', err.message);
+  }
+
+  return result;
+}
+
+// --- PDF metadata extraction ---
+
+async function extractPdfMetadata(bookPath, bookFilename) {
+  const result = { title: '', author: '', coverFile: null };
+
+  try {
+    const pdfParse = require('pdf-parse');
+    const dataBuffer = fs.readFileSync(bookPath);
+    const data = await pdfParse(dataBuffer, { max: 1 }); // only parse first page for speed
+
+    if (data.info) {
+      result.title = data.info.Title || '';
+      result.author = data.info.Author || '';
+    }
+
+    // For PDF cover, we'll generate a placeholder based on the title
+    // (Server-side PDF-to-image rendering requires heavy dependencies like canvas/sharp)
+    // The client will show a styled placeholder for PDFs without covers
+  } catch (err) {
+    console.warn('PDF metadata extraction warning:', err.message);
   }
 
   return result;

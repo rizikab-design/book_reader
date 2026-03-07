@@ -16,4 +16,13 @@ const config = getDefaultConfig(__dirname);
 // (similar to how it already handles .png, .jpg, .mp3, etc.)
 config.resolver.assetExts.push('epub');
 
+// pdfjs-dist tries to require('canvas') for Node.js environments.
+// In the browser we don't need it, so we tell Metro to resolve it to an empty module.
+config.resolver.resolveRequest = (context, moduleName, platform) => {
+  if (moduleName === 'canvas') {
+    return { type: 'empty' };
+  }
+  return context.resolveRequest(context, moduleName, platform);
+};
+
 module.exports = config;
