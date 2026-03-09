@@ -11,7 +11,14 @@ export function useAutoHideBars(timeout = 3000) {
   }
 
   useEffect(() => {
-    function handleMouseMove() { resetTimer(); }
+    let lastReset = 0;
+    function handleMouseMove() {
+      const now = Date.now();
+      if (now - lastReset > 100) {
+        resetTimer();
+        lastReset = now;
+      }
+    }
     window.addEventListener('mousemove', handleMouseMove);
     resetTimer();
     return () => {

@@ -2,8 +2,9 @@ import { useEffect, useState } from 'react';
 import { StyleSheet, Platform } from 'react-native';
 
 import { Text, View } from '@/components/Themed';
-import { getAvailableVoices } from '@/lib/tts-engine';
+import { getAvailableVoices, getTTSMode, setTTSMode, getNeuralVoice, setNeuralVoice, getNeuralVoices, type TTSMode, type NeuralVoiceInfo } from '@/lib/tts-engine';
 import { getGoogleClientId, setGoogleClientId } from '@/lib/google-drive';
+import { API_BASE } from '@/lib/config';
 
 const FAVORITES_KEY = 'tts-favorite-voices';
 const PREFERRED_VOICE_KEY = 'tts-preferred-voice';
@@ -12,7 +13,8 @@ function loadFavorites(): string[] {
   try {
     const stored = localStorage.getItem(FAVORITES_KEY);
     return stored ? JSON.parse(stored) : [];
-  } catch {
+  } catch (e) {
+    console.warn('Failed to load favorite voices from localStorage:', e);
     return [];
   }
 }
@@ -27,17 +29,24 @@ export default function SettingsScreen() {
   const [previewVoice, setPreviewVoice] = useState<string | null>(null);
   const [preferredVoice, setPreferredVoice] = useState<string>('');
   const [googleClientId, setGoogleClientIdState] = useState<string>('');
+  const [ttsMode, setTtsModeState] = useState<TTSMode>('browser');
+  const [neuralVoices, setNeuralVoices] = useState<NeuralVoiceInfo[]>([]);
+  const [neuralVoice, setNeuralVoiceState] = useState<string>('en-US-AriaNeural');
+  const [neuralPreview, setNeuralPreview] = useState<string | null>(null);
 
   useEffect(() => {
     if (Platform.OS !== 'web') return;
     setFavorites(loadFavorites());
     setGoogleClientIdState(getGoogleClientId());
+    setTtsModeState(getTTSMode());
+    setNeuralVoiceState(getNeuralVoice());
     try {
       setPreferredVoice(localStorage.getItem(PREFERRED_VOICE_KEY) || '');
-    } catch {}
+    } catch (e) { console.warn('Failed to load preferred voice setting:', e); }
     getAvailableVoices().then((allVoices) => {
       setVoices(allVoices.filter((v) => v.lang.startsWith('en')));
     });
+    getNeuralVoices().then(setNeuralVoices).catch(() => {});
   }, []);
 
   function changePreferredVoice(name: string) {
@@ -64,6 +73,26 @@ export default function SettingsScreen() {
     utterance.onend = () => setPreviewVoice(null);
     utterance.onerror = () => setPreviewVoice(null);
     window.speechSynthesis.speak(utterance);
+  }
+
+  async function previewNeuralVoice(voiceId: string) {
+    setNeuralPreview(voiceId);
+    try {
+      const res = await fetch(`${API_BASE}/api/tts/speak`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: 'Hello, this is a preview of my voice.', voice: voiceId, rate: 1 }),
+      });
+      if (!res.ok) { setNeuralPreview(null); return; }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      audio.onended = () => { setNeuralPreview(null); URL.revokeObjectURL(url); };
+      audio.onerror = () => { setNeuralPreview(null); URL.revokeObjectURL(url); };
+      audio.play();
+    } catch {
+      setNeuralPreview(null);
+    }
   }
 
   if (Platform.OS !== 'web') {
@@ -119,9 +148,88 @@ export default function SettingsScreen() {
       </div>
 
       <div style={webStyles.section}>
-        <h2 style={webStyles.sectionTitle}>Preferred Voice</h2>
+        <h2 style={webStyles.sectionTitle}>Voice Engine</h2>
         <p style={webStyles.sectionDesc}>
-          This voice will be used by default when reading aloud in the reader.
+          Choose between your device's built-in voices or high-quality neural voices (requires server).
+        </p>
+        <div style={{ display: 'flex', gap: '8px', marginBottom: '16px' }}>
+          <button
+            onClick={() => { setTtsModeState('browser'); setTTSMode('browser'); }}
+            style={{
+              ...webStyles.preferredSelect,
+              flex: 1,
+              textAlign: 'center',
+              cursor: 'pointer',
+              fontWeight: ttsMode === 'browser' ? 700 : 400,
+              background: ttsMode === 'browser' ? '#2f95dc' : '#fff',
+              color: ttsMode === 'browser' ? '#fff' : '#333',
+              border: ttsMode === 'browser' ? '2px solid #2f95dc' : '1px solid #ddd',
+            }}
+          >
+            Browser Voices
+          </button>
+          <button
+            onClick={() => { setTtsModeState('neural'); setTTSMode('neural'); }}
+            style={{
+              ...webStyles.preferredSelect,
+              flex: 1,
+              textAlign: 'center',
+              cursor: 'pointer',
+              fontWeight: ttsMode === 'neural' ? 700 : 400,
+              background: ttsMode === 'neural' ? '#2f95dc' : '#fff',
+              color: ttsMode === 'neural' ? '#fff' : '#333',
+              border: ttsMode === 'neural' ? '2px solid #2f95dc' : '1px solid #ddd',
+            }}
+          >
+            Neural Voices
+          </button>
+        </div>
+
+        {ttsMode === 'neural' && (
+          <>
+            <h3 style={{ fontSize: '14px', fontWeight: 600, color: '#333', margin: '0 0 8px 0' }}>Neural Voice</h3>
+            <select
+              value={neuralVoice}
+              onChange={(e) => { setNeuralVoiceState(e.target.value); setNeuralVoice(e.target.value); }}
+              style={{ ...webStyles.preferredSelect, marginBottom: '12px' }}
+            >
+              {neuralVoices.map((v) => (
+                <option key={v.id} value={v.id}>{v.name}</option>
+              ))}
+              {neuralVoices.length === 0 && <option value="">Loading voices...</option>}
+            </select>
+
+            <div style={webStyles.voiceGroup}>
+              <div style={webStyles.groupLabel}>Preview Neural Voices ({neuralVoices.length})</div>
+              {neuralVoices.map((v) => (
+                <div key={v.id} style={webStyles.voiceRow}>
+                  <div style={webStyles.voiceInfo}>
+                    <span style={webStyles.voiceName}>{v.name.replace('Microsoft ', '').replace(' Online (Natural)', '')}</span>
+                    <span style={webStyles.voiceLang}>{v.locale} · {v.gender}</span>
+                  </div>
+                  <button
+                    onClick={() => previewNeuralVoice(v.id)}
+                    style={{
+                      ...webStyles.previewButton,
+                      color: neuralPreview === v.id ? '#2f95dc' : '#999',
+                    }}
+                    title="Preview voice"
+                  >
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                      <polygon points="5 3 19 12 5 21 5 3" />
+                    </svg>
+                  </button>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+      </div>
+
+      <div style={webStyles.section}>
+        <h2 style={webStyles.sectionTitle}>Preferred Browser Voice</h2>
+        <p style={webStyles.sectionDesc}>
+          This voice will be used when "Browser Voices" mode is selected.
         </p>
         <select
           value={preferredVoice}

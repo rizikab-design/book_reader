@@ -51,7 +51,11 @@ export function useReaderHighlights({ bookId, bookTitle, showToast }: UseReaderH
 
   function addHighlight(highlight: Omit<ReaderHighlight, 'id'>) {
     const id = ++highlightIdRef.current;
-    localStorage.setItem(bookKey(bookId, 'highlightNextId'), JSON.stringify(highlightIdRef.current));
+    try {
+      localStorage.setItem(bookKey(bookId, 'highlightNextId'), JSON.stringify(highlightIdRef.current));
+    } catch (e) {
+      console.warn('Failed to persist highlight counter:', e);
+    }
     const full: ReaderHighlight = { ...highlight, id };
     setHighlights(prev => [...prev, full]);
     showToast('Highlight saved');
@@ -85,8 +89,8 @@ export function useReaderHighlights({ bookId, bookTitle, showToast }: UseReaderH
       const result = await lookupWord(word);
       if (result) setDictResult(result);
       else setDictError('No definition found for "' + word + '"');
-    } catch (e: any) {
-      setDictError(e.message || 'Lookup failed');
+    } catch (e: unknown) {
+      setDictError(e instanceof Error ? e.message : 'Lookup failed');
     }
     setDictLoading(false);
   }
@@ -110,8 +114,8 @@ export function useReaderHighlights({ bookId, bookTitle, showToast }: UseReaderH
       const url = await exportCornellNotes(token, bookTitle, exportData);
       window.open(url, '_blank');
       showToast('Notes exported to Google Drive!');
-    } catch (e: any) {
-      showToast(e.message || 'Export failed');
+    } catch (e: unknown) {
+      showToast(e instanceof Error ? e.message : 'Export failed');
     }
     setIsExportingDrive(false);
   }

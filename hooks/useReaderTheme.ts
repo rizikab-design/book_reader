@@ -2,8 +2,18 @@ import { useMemo } from 'react';
 import { usePersistedState } from './usePersistedState';
 import { ThemeName, themes } from './reader-types';
 
+function getDefaultTheme(): ThemeName {
+  try {
+    // If user has explicitly set a theme, usePersistedState will use it.
+    // This only determines the fallback for first-time use.
+    if (localStorage.getItem('reader-global-theme')) return 'original';
+    if (window.matchMedia('(prefers-color-scheme: dark)').matches) return 'quiet';
+  } catch { /* SSR or no matchMedia */ }
+  return 'original';
+}
+
 export function useReaderTheme() {
-  const [activeTheme, setActiveTheme] = usePersistedState<ThemeName>('reader-global-theme', 'original');
+  const [activeTheme, setActiveTheme] = usePersistedState<ThemeName>('reader-global-theme', getDefaultTheme());
   const [fontSize, setFontSize] = usePersistedState<number>('reader-global-fontSize', 100);
 
   const themeColors = themes[activeTheme];

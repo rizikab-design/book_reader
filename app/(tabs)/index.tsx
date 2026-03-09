@@ -18,6 +18,18 @@ export default function LibraryScreen() {
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [lastReadId, setLastReadId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const errorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Auto-clear error after 8 seconds
+  useEffect(() => {
+    if (error) {
+      if (errorTimerRef.current) clearTimeout(errorTimerRef.current);
+      errorTimerRef.current = setTimeout(() => setError(null), 8000);
+    }
+    return () => {
+      if (errorTimerRef.current) clearTimeout(errorTimerRef.current);
+    };
+  }, [error]);
 
   const loadBooks = useCallback(async () => {
     try {
@@ -29,7 +41,7 @@ export default function LibraryScreen() {
         try {
           const stored = localStorage.getItem(`reader-${book.id}-progress`);
           if (stored) progress = parseFloat(stored) || 0;
-        } catch {}
+        } catch (e) { console.warn('Failed to read book progress:', e); }
         return { ...book, progress };
       });
       setBooks(withProgress);
@@ -37,8 +49,8 @@ export default function LibraryScreen() {
       try {
         const lrId = localStorage.getItem('reader-lastReadId');
         setLastReadId(lrId);
-      } catch {}
-    } catch (e: any) {
+      } catch (e) { console.warn('Failed to load last-read book:', e); }
+    } catch (e: unknown) {
       setError('Could not connect to server. Make sure the server is running (cd server && npm start).');
     } finally {
       setIsLoading(false);
@@ -61,8 +73,8 @@ export default function LibraryScreen() {
     try {
       await uploadBook(file);
       await loadBooks();
-    } catch (e: any) {
-      setError(e.message || 'Upload failed');
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Upload failed');
     }
     setUploading(false);
   }
@@ -79,8 +91,8 @@ export default function LibraryScreen() {
     try {
       await deleteBook(id);
       await loadBooks();
-    } catch (e: any) {
-      setError(e.message);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Delete failed');
     }
     setDeletingId(null);
   }
@@ -114,16 +126,20 @@ export default function LibraryScreen() {
       onDrop={handleDrop}
     >
       <style>{`
+        @keyframes spin { to { transform: rotate(360deg); } }
         .book-cover-btn:hover { transform: scale(1.04); box-shadow: 0 4px 16px rgba(0,0,0,0.22) !important; }
         .book-cover-btn { transition: transform 0.15s ease, box-shadow 0.15s ease; }
         .delete-btn { opacity: 0; transition: opacity 0.15s ease; }
         .book-card:hover .delete-btn { opacity: 0.7; }
         .delete-btn:hover { opacity: 1 !important; }
+        .continue-reading-btn:hover { box-shadow: 0 2px 12px rgba(0,0,0,0.1); }
+        .upload-btn:hover { filter: brightness(0.92); }
       `}</style>
 
       <div style={webStyles.header}>
         <h1 style={webStyles.title}>My Library</h1>
         <button
+          className="upload-btn"
           onClick={() => fileInputRef.current?.click()}
           style={webStyles.uploadButton}
           disabled={uploading}
@@ -150,6 +166,7 @@ export default function LibraryScreen() {
       {/* Continue Reading banner */}
       {lastReadBook && lastReadBook.progress > 0 && lastReadBook.progress < 0.99 && (
         <button
+          className="continue-reading-btn"
           onClick={() => router.push(`/reader/${lastReadBook.id}`)}
           style={webStyles.continueReading}
         >
@@ -183,7 +200,10 @@ export default function LibraryScreen() {
       )}
 
       {isLoading ? (
-        <div style={webStyles.emptyState}>Loading...</div>
+        <div style={{ ...webStyles.emptyState, flexDirection: 'column', gap: '12px' }}>
+          <div style={{ width: '28px', height: '28px', border: '3px solid #e0e0e0', borderTopColor: '#2f95dc', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
+          <span style={{ color: '#999', fontSize: '14px' }}>Loading library...</span>
+        </div>
       ) : books.length === 0 ? (
         <div style={webStyles.emptyState}>
           <div style={webStyles.emptyIcon}>

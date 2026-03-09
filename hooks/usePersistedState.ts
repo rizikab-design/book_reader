@@ -24,7 +24,11 @@ export function usePersistedState<T>(
       isFirstRender.current = false;
       return;
     }
-    localStorage.setItem(key, JSON.stringify(value));
+    try {
+      localStorage.setItem(key, JSON.stringify(value));
+    } catch (e) {
+      console.warn(`usePersistedState: failed to persist "${key}":`, e);
+    }
   }, [key, value]);
 
   return [value, setValue];

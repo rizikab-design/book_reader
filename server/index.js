@@ -4,7 +4,12 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 
-const { readFile, writeFile } = require('fs').promises;
+const AdmZip = require('adm-zip');
+const pdfParse = require('pdf-parse');
+const { MsEdgeTTS, OUTPUT_FORMAT } = require('msedge-tts');
+const rateLimit = require('express-rate-limit');
+const Database = require('better-sqlite3');
+const crypto = require('crypto');
 
 const app = express();
 const PORT = parseInt(process.env.PORT, 10) || 3001;
@@ -17,34 +22,56 @@ if (PORT < 1 || PORT > 65535) {
 const DATA_ROOT = process.env.DATA_DIR || __dirname;
 const BOOKS_DIR = path.join(DATA_ROOT, 'books');
 const COVERS_DIR = path.join(DATA_ROOT, 'covers');
-const DB_FILE = path.join(DATA_ROOT, 'library.json');
+const DB_PATH = path.join(DATA_ROOT, 'library.db');
 
 // Ensure directories exist
 fs.mkdirSync(BOOKS_DIR, { recursive: true });
 fs.mkdirSync(COVERS_DIR, { recursive: true });
 
-// --- Simple file lock to prevent race conditions on library.json ---
-let libraryLock = Promise.resolve();
+// --- SQLite database ---
+const db = new Database(DB_PATH);
+db.pragma('journal_mode = WAL');
+db.exec(`
+  CREATE TABLE IF NOT EXISTS books (
+    id TEXT PRIMARY KEY,
+    filename TEXT NOT NULL,
+    originalName TEXT NOT NULL,
+    title TEXT NOT NULL,
+    author TEXT NOT NULL DEFAULT 'Unknown',
+    coverFile TEXT,
+    format TEXT NOT NULL DEFAULT 'epub',
+    addedAt TEXT NOT NULL,
+    fileSize INTEGER NOT NULL DEFAULT 0
+  )
+`);
 
-function withLibraryLock(fn) {
-  const next = libraryLock.then(fn, fn);
-  libraryLock = next.catch(() => {}); // prevent unhandled rejection
-  return next;
-}
-
-// Initialize library DB
-async function loadLibrary() {
+// Migrate existing library.json if present and DB is empty
+const JSON_DB_FILE = path.join(DATA_ROOT, 'library.json');
+if (fs.existsSync(JSON_DB_FILE) && db.prepare('SELECT COUNT(*) AS cnt FROM books').get().cnt === 0) {
   try {
-    const data = await readFile(DB_FILE, 'utf-8');
-    return JSON.parse(data);
-  } catch {
-    return [];
+    const legacy = JSON.parse(fs.readFileSync(JSON_DB_FILE, 'utf-8'));
+    const insert = db.prepare(
+      'INSERT OR IGNORE INTO books (id, filename, originalName, title, author, coverFile, format, addedAt, fileSize) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    );
+    const migrate = db.transaction((books) => {
+      for (const b of books) {
+        insert.run(b.id, b.filename, b.originalName, b.title, b.author || 'Unknown', b.coverFile || null, b.format || 'epub', b.addedAt || new Date().toISOString(), b.fileSize || 0);
+      }
+    });
+    migrate(legacy);
+    console.log(`Migrated ${legacy.length} books from library.json to SQLite`);
+  } catch (e) {
+    console.warn('Failed to migrate library.json:', e.message);
   }
 }
 
-async function saveLibrary(books) {
-  await writeFile(DB_FILE, JSON.stringify(books, null, 2));
-}
+// Database helpers
+const stmtAll = db.prepare('SELECT * FROM books ORDER BY addedAt DESC');
+const stmtGetById = db.prepare('SELECT * FROM books WHERE id = ?');
+const stmtInsert = db.prepare(
+  'INSERT INTO books (id, filename, originalName, title, author, coverFile, format, addedAt, fileSize) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+);
+const stmtDelete = db.prepare('DELETE FROM books WHERE id = ?');
 
 // Middleware — restrict CORS to localhost origins
 app.use(cors({
@@ -88,12 +115,11 @@ const upload = multer({
 // --- Routes ---
 
 // List all books
-app.get('/api/books', async (req, res) => {
-  const books = await loadLibrary();
-  res.json(books);
+app.get('/api/books', (req, res) => {
+  res.json(stmtAll.all());
 });
 
-// Upload a book (locked to prevent concurrent writes)
+// Upload a book
 app.post('/api/books', upload.single('file'), async (req, res) => {
   try {
     if (!req.file) {
@@ -115,12 +141,12 @@ app.post('/api/books', upload.single('file'), async (req, res) => {
         : await extractEpubMetadata(bookPath, bookFilename);
     } catch (err) {
       // Metadata extraction failed — clean up orphaned file
-      try { fs.unlinkSync(bookPath); } catch {}
+      try { fs.unlinkSync(bookPath); } catch (e) { console.warn('Failed to clean up orphaned book file:', e); }
       return res.status(500).json({ error: 'Failed to process book file' });
     }
 
     const book = {
-      id: Date.now().toString(),
+      id: crypto.randomUUID(),
       filename: bookFilename,
       originalName,
       title: metadata.title || originalName.replace(/\.(epub|pdf)$/i, ''),
@@ -131,55 +157,52 @@ app.post('/api/books', upload.single('file'), async (req, res) => {
       fileSize: req.file.size,
     };
 
-    await withLibraryLock(async () => {
-      const library = await loadLibrary();
-      library.push(book);
-      await saveLibrary(library);
-    });
+    stmtInsert.run(book.id, book.filename, book.originalName, book.title, book.author, book.coverFile, book.format, book.addedAt, book.fileSize);
 
     res.json(book);
   } catch (err) {
     console.error('Upload error:', err);
     // Clean up uploaded file on failure
     if (req.file?.path) {
-      try { fs.unlinkSync(req.file.path); } catch {}
+      try { fs.unlinkSync(req.file.path); } catch (e) { console.warn('Failed to clean up temp upload file:', e); }
     }
-    res.status(500).json({ error: err.message || 'Upload failed' });
+    res.status(500).json({ error: 'Upload failed' });
   }
 });
 
-// Delete a book (locked to prevent concurrent writes)
-app.delete('/api/books/:id', async (req, res) => {
+// Delete a book
+app.delete('/api/books/:id', (req, res) => {
+  if (!req.params.id || !/^(\d+|[0-9a-f-]{36})$/.test(req.params.id)) {
+    return res.status(400).json({ error: 'Invalid book ID' });
+  }
+
   try {
-    const result = await withLibraryLock(async () => {
-      const library = await loadLibrary();
-      const book = library.find((b) => b.id === req.params.id);
-      if (!book) return null;
+    const book = stmtGetById.get(req.params.id);
+    if (!book) return res.status(404).json({ error: 'Book not found' });
 
-      // Validate filename doesn't traverse directories
-      if (book.filename.includes('/') || book.filename.includes('\\') || book.filename.includes('..')) {
-        return { error: 'Invalid filename' };
-      }
+    // Validate book file path stays within BOOKS_DIR
+    const bookPath = path.resolve(BOOKS_DIR, book.filename);
+    if (!bookPath.startsWith(BOOKS_DIR + path.sep)) {
+      return res.status(400).json({ error: 'Invalid filename' });
+    }
 
-      // Delete files
-      const bookPath = path.join(BOOKS_DIR, book.filename);
-      try { if (fs.existsSync(bookPath)) fs.unlinkSync(bookPath); } catch (e) {
-        console.warn('Failed to delete book file:', e.message);
-      }
-      if (book.coverFile) {
-        const coverPath = path.join(COVERS_DIR, book.coverFile);
+    // Delete book file
+    try { if (fs.existsSync(bookPath)) fs.unlinkSync(bookPath); } catch (e) {
+      console.warn('Failed to delete book file:', e.message);
+    }
+
+    // Validate and delete cover file
+    if (book.coverFile) {
+      const coverPath = path.resolve(COVERS_DIR, book.coverFile);
+      if (coverPath.startsWith(COVERS_DIR + path.sep)) {
         try { if (fs.existsSync(coverPath)) fs.unlinkSync(coverPath); } catch (e) {
           console.warn('Failed to delete cover file:', e.message);
         }
       }
+    }
 
-      const updated = library.filter((b) => b.id !== req.params.id);
-      await saveLibrary(updated);
-      return { ok: true };
-    });
-
-    if (!result) return res.status(404).json({ error: 'Book not found' });
-    res.json(result);
+    stmtDelete.run(req.params.id);
+    res.json({ ok: true });
   } catch (err) {
     console.error('Delete error:', err);
     res.status(500).json({ error: 'Failed to delete book' });
@@ -210,7 +233,6 @@ async function extractEpubMetadata(bookPath, bookFilename) {
   const result = { title: '', author: '', coverFile: null };
 
   try {
-    const AdmZip = require('adm-zip');
     const zip = new AdmZip(bookPath);
     const entries = zip.getEntries();
 
@@ -319,7 +341,6 @@ async function extractPdfMetadata(bookPath, bookFilename) {
   const result = { title: '', author: '', coverFile: null };
 
   try {
-    const pdfParse = require('pdf-parse');
     const dataBuffer = fs.readFileSync(bookPath);
     const data = await pdfParse(dataBuffer, { max: 1 }); // only parse first page for speed
 
@@ -333,6 +354,90 @@ async function extractPdfMetadata(bookPath, bookFilename) {
 
   return result;
 }
+
+// --- Neural TTS via Microsoft Edge (free, high quality) ---
+
+// Cache a TTS instance per voice to avoid re-handshaking
+const ttsInstances = new Map(); // voice → { instance, lastUsed }
+const TTS_INSTANCE_LIMIT = 5;
+const TTS_STALE_MS = 30 * 60 * 1000; // 30 minutes
+
+async function getTtsInstance(voice) {
+  const cached = ttsInstances.get(voice);
+  if (cached) {
+    if (Date.now() - cached.lastUsed > TTS_STALE_MS) {
+      ttsInstances.delete(voice);
+    } else {
+      cached.lastUsed = Date.now();
+      return cached.instance;
+    }
+  }
+  const tts = new MsEdgeTTS();
+  await tts.setMetadata(voice, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
+  if (ttsInstances.size >= TTS_INSTANCE_LIMIT) {
+    const oldest = ttsInstances.keys().next().value;
+    ttsInstances.delete(oldest);
+  }
+  ttsInstances.set(voice, { instance: tts, lastUsed: Date.now() });
+  return tts;
+}
+
+// List available neural voices
+app.get('/api/tts/voices', async (req, res) => {
+  try {
+    const tts = new MsEdgeTTS();
+    const voices = await tts.getVoices();
+    const english = voices
+      .filter(v => v.Locale.startsWith('en'))
+      .map(v => ({ id: v.ShortName, name: v.FriendlyName, locale: v.Locale, gender: v.Gender }));
+    res.json(english);
+  } catch (err) {
+    console.error('TTS voices error:', err.message);
+    res.status(500).json({ error: 'Failed to fetch voices' });
+  }
+});
+
+// Generate speech audio — streams MP3 back to client
+const MAX_TTS_LENGTH = 50000;
+const ttsLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 20,
+  message: { error: 'Too many TTS requests. Please wait a minute before trying again.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+app.post('/api/tts/speak', ttsLimiter, async (req, res) => {
+  try {
+    const { text, voice, rate } = req.body;
+    if (!text || typeof text !== 'string') {
+      return res.status(400).json({ error: 'Text is required' });
+    }
+    if (text.length > MAX_TTS_LENGTH) {
+      return res.status(400).json({ error: 'Text too long' });
+    }
+
+    const voiceId = voice || 'en-US-AriaNeural';
+    const tts = await getTtsInstance(voiceId);
+
+    // Convert rate multiplier (1 = normal, 1.5 = 50% faster) to percentage string
+    const ratePercent = rate ? `${rate >= 1 ? '+' : ''}${Math.round((rate - 1) * 100)}%` : '+0%';
+
+    const result = tts.toStream(text, { rate: ratePercent });
+
+    res.setHeader('Content-Type', 'audio/mpeg');
+    res.setHeader('Transfer-Encoding', 'chunked');
+    result.audioStream.pipe(res);
+    result.audioStream.on('error', (err) => {
+      console.error('TTS stream error:', err.message);
+      if (!res.headersSent) res.status(500).json({ error: 'TTS generation failed' });
+    });
+  } catch (err) {
+    console.error('TTS speak error:', err.message);
+    // Re-create instance on failure (connection may be stale)
+    if (req.body?.voice) ttsInstances.delete(req.body.voice);
+    if (!res.headersSent) res.status(500).json({ error: 'TTS generation failed' });
+  }
+});
 
 // Serve the built Expo web app (for Electron / production)
 const distPath = path.join(__dirname, '..', 'dist');

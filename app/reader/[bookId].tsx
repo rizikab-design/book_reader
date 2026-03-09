@@ -13,8 +13,9 @@ import { Text, View } from '@/components/Themed';
 import { stopSpeaking } from '@/lib/tts-engine';
 import { getBookUrl, fetchBooks, BookEntry } from '@/lib/api';
 import PdfReader from '@/components/PdfReader';
+import type { EpubContents, EpubLocation, EpubNavItem, EpubSpineItem } from '@/types/epub';
 
-import { HighlightColor, HIGHLIGHT_COLORS, ThemeName, themes } from '@/hooks/reader-types';
+import { HighlightColor, HIGHLIGHT_COLORS, ThemeName, ThemeConfig, themes } from '@/hooks/reader-types';
 import { useToast } from '@/hooks/useToast';
 import { useAutoHideBars } from '@/hooks/useAutoHideBars';
 import { useReaderTheme } from '@/hooks/useReaderTheme';
@@ -23,11 +24,29 @@ import { useReaderTts } from '@/hooks/useReaderTts';
 import { useReaderHighlights } from '@/hooks/useReaderHighlights';
 import { useReaderBookmarks } from '@/hooks/useReaderBookmarks';
 
+import TocPanel from '@/components/reader/TocPanel';
+import BookmarksPanel from '@/components/reader/BookmarksPanel';
+import HighlightsPanel from '@/components/reader/HighlightsPanel';
+import SearchPanel from '@/components/reader/SearchPanel';
+import ThemesPanel from '@/components/reader/ThemesPanel';
+
+function buildThemeCSS(theme: ThemeConfig, size: number): string {
+  return `
+    body { background-color: ${theme.bg} !important; color: ${theme.text} !important; font-size: ${size}% !important; ${theme.fontWeight ? `font-weight: ${theme.fontWeight} !important;` : ''} ${theme.fontFamily ? `font-family: ${theme.fontFamily} !important;` : ''} }
+    p, span, div, li, td, th, h1, h2, h3, h4, h5, h6, a, blockquote { color: ${theme.text} !important; ${theme.fontWeight ? `font-weight: ${theme.fontWeight} !important;` : ''} ${theme.fontFamily ? `font-family: ${theme.fontFamily} !important;` : ''} }
+    img, svg, figure, table { border-radius: 4px; }
+    figure, table, .figure, [class*="figure"] { background-color: ${theme.bg} !important; }
+    td, th { background-color: ${theme.bg} !important; border-color: ${theme.text}33 !important; }
+  `;
+}
+
 export default function ReaderScreen() {
   const { bookId } = useLocalSearchParams<{ bookId: string }>();
 
   const viewerRef = useRef<HTMLDivElement | null>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- epub.js types are incompatible with strict interfaces
   const renditionRef = useRef<any>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const bookRef = useRef<any>(null);
 
   // ── Core state ──────────────────────────────────────────────────────
@@ -52,7 +71,7 @@ export default function ReaderScreen() {
   const prevHighlightRef = useRef<Element | null>(null);
 
   // Track iframe listeners for cleanup on page turn
-  const iframeListenersRef = useRef<{ doc: Document; type: string; handler: any }[]>([]);
+  const iframeListenersRef = useRef<{ doc: Document; type: string; handler: EventListener }[]>([]);
 
   // Table of contents
   const [tocItems, setTocItems] = useState<{ label: string; href: string; level: number }[]>([]);
@@ -60,6 +79,7 @@ export default function ReaderScreen() {
 
   // ePub CFI for bookmarks
   const currentCfiRef = useRef<string>('');
+  const savePositionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Overall book progress (0-1)
   const [bookProgress, setBookProgress] = useState(0);
@@ -141,11 +161,16 @@ export default function ReaderScreen() {
   // ── Load book on mount ────────────────────────────────────────────
   useEffect(() => {
     if (Platform.OS !== 'web') return;
+    if (!bookId) {
+      setError('No book ID provided');
+      setIsLoading(false);
+      return;
+    }
     loadBook();
     return () => {
       cleanupIframeListeners();
       if (renditionRef.current) {
-        try { renditionRef.current.destroy(); } catch {}
+        try { renditionRef.current.destroy(); } catch (e) { console.warn('Failed to destroy rendition:', e); }
       }
     };
   }, []);
@@ -248,12 +273,12 @@ export default function ReaderScreen() {
 
   function cleanupIframeListeners() {
     for (const entry of iframeListenersRef.current) {
-      try { entry.doc.removeEventListener(entry.type, entry.handler); } catch {}
+      try { entry.doc.removeEventListener(entry.type, entry.handler); } catch (e) { console.warn('Failed to remove iframe listener:', e); }
     }
     iframeListenersRef.current = [];
   }
 
-  function addIframeListener(doc: Document, type: string, handler: any) {
+  function addIframeListener(doc: Document, type: string, handler: EventListener) {
     doc.addEventListener(type, handler);
     iframeListenersRef.current.push({ doc, type, handler });
   }
@@ -277,7 +302,7 @@ export default function ReaderScreen() {
       tts.setCurrentWordIndex(wordIndex);
       tts.startTTSFromWordRef.current(wordIndex, tts.ttsSpeedRef.current);
     };
-    addIframeListener(doc, 'click', handler);
+    addIframeListener(doc, 'click', handler as EventListener);
   }
 
   function setupSelectionListener(doc: Document) {
@@ -344,7 +369,7 @@ export default function ReaderScreen() {
       e.preventDefault();
       e.stopPropagation();
     };
-    addIframeListener(doc, 'dblclick', handler);
+    addIframeListener(doc, 'dblclick', handler as EventListener);
   }
 
   function applyHighlightToRange(range: Range, color: HighlightColor) {
@@ -370,7 +395,7 @@ export default function ReaderScreen() {
             if (intersects) {
               (span as HTMLElement).classList.add(`user-highlight-${color}`);
             }
-          } catch {}
+          } catch (e) { console.warn('Failed to apply highlight to span:', e); }
         });
       }
     }
@@ -405,30 +430,7 @@ export default function ReaderScreen() {
       styleEl.id = 'reader-theme';
       iframeDoc.head.appendChild(styleEl);
     }
-    styleEl.textContent = `
-      body {
-        background-color: ${theme.bg} !important;
-        color: ${theme.text} !important;
-        font-size: ${size}% !important;
-        ${theme.fontWeight ? `font-weight: ${theme.fontWeight} !important;` : ''}
-        ${theme.fontFamily ? `font-family: ${theme.fontFamily} !important;` : ''}
-      }
-      p, span, div, li, td, th, h1, h2, h3, h4, h5, h6, a, blockquote {
-        color: ${theme.text} !important;
-        ${theme.fontWeight ? `font-weight: ${theme.fontWeight} !important;` : ''}
-        ${theme.fontFamily ? `font-family: ${theme.fontFamily} !important;` : ''}
-      }
-      img, svg, figure, table {
-        border-radius: 4px;
-      }
-      figure, table, .figure, [class*="figure"] {
-        background-color: ${theme.bg} !important;
-      }
-      td, th {
-        background-color: ${theme.bg} !important;
-        border-color: ${theme.text}33 !important;
-      }
-    `;
+    styleEl.textContent = buildThemeCSS(theme, size);
   }
 
   function setTheme(themeName: ThemeName) {
@@ -470,8 +472,8 @@ export default function ReaderScreen() {
       const book = bookRef.current;
       await book.ready;
       const results: { cfi?: string; excerpt: string }[] = [];
-      const spineItems: any[] = [];
-      book.spine.each((item: any) => spineItems.push(item));
+      const spineItems: EpubSpineItem[] = [];
+      book.spine.each((item: EpubSpineItem) => spineItems.push(item));
 
       for (const item of spineItems) {
         if (searchCancelRef.current) break;
@@ -524,6 +526,11 @@ export default function ReaderScreen() {
 
   // ── Load ePub book ────────────────────────────────────────────────
   async function loadBook() {
+    if (!bookId) {
+      setError('No book ID provided');
+      setIsLoading(false);
+      return;
+    }
     try {
       const allBooks = await fetchBooks();
       const meta = allBooks.find((b) => b.id === bookId);
@@ -563,7 +570,7 @@ export default function ReaderScreen() {
 
       renditionRef.current = rendition;
 
-      rendition.hooks.content.register((contents: any) => {
+      rendition.hooks.content.register((contents: EpubContents) => {
         try {
           const doc = contents.document;
           if (doc) {
@@ -585,13 +592,7 @@ export default function ReaderScreen() {
               themeStyle.id = 'reader-theme';
               doc.head.appendChild(themeStyle);
             }
-            themeStyle.textContent = `
-              body { background-color: ${t.bg} !important; color: ${t.text} !important; font-size: ${sz}% !important; ${t.fontWeight ? `font-weight: ${t.fontWeight} !important;` : ''} ${t.fontFamily ? `font-family: ${t.fontFamily} !important;` : ''} }
-              p, span, div, li, td, th, h1, h2, h3, h4, h5, h6, a, blockquote { color: ${t.text} !important; ${t.fontWeight ? `font-weight: ${t.fontWeight} !important;` : ''} ${t.fontFamily ? `font-family: ${t.fontFamily} !important;` : ''} }
-              img, svg, figure, table { border-radius: 4px; }
-              figure, table, .figure, [class*="figure"] { background-color: ${t.bg} !important; }
-              td, th { background-color: ${t.bg} !important; border-color: ${t.text}33 !important; }
-            `;
+            themeStyle.textContent = buildThemeCSS(t, sz);
 
             // Listen for text selection and word clicks in the iframe
             setupSelectionListener(doc);
@@ -601,21 +602,31 @@ export default function ReaderScreen() {
             // Re-apply saved highlights to this page's word spans
             const currentHighlights = hlState.highlightsRef.current;
             if (currentHighlights.length > 0 && words.length > 0) {
-              const pageText = words.join(' ').toLowerCase();
+              // Build a map keyed by lowercase first word → list of highlights
+              const firstWordMap = new Map<string, typeof currentHighlights>();
               for (const h of currentHighlights) {
-                const hLower = h.selectedText.toLowerCase();
-                if (pageText.includes(hLower)) {
+                const hWords = h.selectedText.split(/\s+/);
+                if (hWords.length === 0) continue;
+                const key = hWords[0].toLowerCase();
+                const list = firstWordMap.get(key);
+                if (list) list.push(h);
+                else firstWordMap.set(key, [h]);
+              }
+
+              // Scan words once, checking first-word matches from the map
+              for (let i = 0; i < words.length; i++) {
+                const candidates = firstWordMap.get(words[i].toLowerCase());
+                if (!candidates) continue;
+                for (const h of candidates) {
                   const hWords = h.selectedText.split(/\s+/);
-                  for (let i = 0; i <= words.length - hWords.length; i++) {
-                    const match = hWords.every((hw, j) =>
-                      words[i + j].toLowerCase() === hw.toLowerCase()
-                    );
-                    if (match) {
-                      for (let j = 0; j < hWords.length; j++) {
-                        const span = doc.querySelector(`[data-tts-idx="${i + j}"]`);
-                        if (span) (span as HTMLElement).classList.add(`user-highlight-${h.color}`);
-                      }
-                      break;
+                  if (i + hWords.length > words.length) continue;
+                  const match = hWords.every((hw, j) =>
+                    words[i + j].toLowerCase() === hw.toLowerCase()
+                  );
+                  if (match) {
+                    for (let j = 0; j < hWords.length; j++) {
+                      const span = doc.querySelector(`[data-tts-idx="${i + j}"]`);
+                      if (span) (span as HTMLElement).classList.add(`user-highlight-${h.color}`);
                     }
                   }
                 }
@@ -642,7 +653,7 @@ export default function ReaderScreen() {
       const navigation = await book.loaded.navigation;
       if (navigation?.toc) {
         const items: { label: string; href: string; level: number }[] = [];
-        function flattenToc(tocList: any[], level: number) {
+        function flattenToc(tocList: EpubNavItem[], level: number) {
           for (const item of tocList) {
             items.push({
               label: item.label?.trim() || 'Untitled',
@@ -659,8 +670,8 @@ export default function ReaderScreen() {
       // Auto-generate TOC if none found by scanning spine for headings
       if (!navigation?.toc?.length) {
         const autoToc: { label: string; href: string; level: number }[] = [];
-        const spineItems: any[] = [];
-        book.spine.each((item: any) => spineItems.push(item));
+        const spineItems: EpubSpineItem[] = [];
+        book.spine.each((item: EpubSpineItem) => spineItems.push(item));
         for (const item of spineItems) {
           try {
             await item.load(book.load.bind(book));
@@ -677,16 +688,14 @@ export default function ReaderScreen() {
               });
             }
             item.unload();
-          } catch {}
+          } catch (e) { console.warn('Failed to load spine item for TOC scan:', e); }
         }
         if (autoToc.length > 0) setTocItems(autoToc);
       }
 
-      rendition.on('relocated', (location: any) => {
+      rendition.on('relocated', (location: EpubLocation) => {
         hlState.setSelectionPopup(null);
-        // Track last-read book and progress for library UI
-        localStorage.setItem('reader-lastReadId', bookId!);
-        localStorage.setItem('reader-lastReadTime', String(Date.now()));
+        // State updates fire immediately
         const current = location.start?.displayed;
         if (current) {
           setCurrentPage(current.page);
@@ -696,20 +705,30 @@ export default function ReaderScreen() {
         }
         if (location.start?.cfi) {
           currentCfiRef.current = location.start.cfi;
-          localStorage.setItem(`reader-${bookId}-position`, location.start.cfi);
         }
         if (location.start?.percentage != null) {
           setBookProgress(location.start.percentage);
-          localStorage.setItem(`reader-${bookId}-progress`, String(location.start.percentage));
         }
+        // Debounce localStorage writes (500ms)
+        if (savePositionTimerRef.current) clearTimeout(savePositionTimerRef.current);
+        savePositionTimerRef.current = setTimeout(() => {
+          localStorage.setItem('reader-lastReadId', bookId!);
+          localStorage.setItem('reader-lastReadTime', String(Date.now()));
+          if (location.start?.cfi) {
+            localStorage.setItem(`reader-${bookId}-position`, location.start.cfi);
+          }
+          if (location.start?.percentage != null) {
+            localStorage.setItem(`reader-${bookId}-progress`, String(location.start.percentage));
+          }
+        }, 500);
       });
 
       // Generate locations for overall book progress percentage
       book.locations.generate(1024);
 
       setIsLoading(false);
-    } catch (e: any) {
-      setError(e.message || 'Failed to load book');
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Failed to load book');
       setIsLoading(false);
     }
   }
@@ -734,10 +753,18 @@ export default function ReaderScreen() {
           <div style={{ ...webStyles.progressBarFill, width: `${Math.round(bookProgress * 100)}%` }} />
         </div>
 
-        <style>{`@keyframes fadeInOut { 0% { opacity: 0; transform: translateX(-50%) translateY(8px); } 10% { opacity: 1; transform: translateX(-50%) translateY(0); } 80% { opacity: 1; } 100% { opacity: 0; } }`}</style>
+        <style>{`
+          @keyframes fadeInOut { 0% { opacity: 0; transform: translateX(-50%) translateY(8px); } 10% { opacity: 1; transform: translateX(-50%) translateY(0); } 80% { opacity: 1; } 100% { opacity: 0; } }
+          @keyframes spin { to { transform: rotate(360deg); } }
+          .reader-topbar button:hover { background: rgba(0,0,0,0.06) !important; }
+          .reader-pagechevron:hover { opacity: 0.7 !important; }
+          .reader-ttsbar button:hover { opacity: 0.8; }
+          button:disabled { cursor: not-allowed !important; }
+          .reader-highlight-color:hover { transform: scale(1.15); }
+        `}</style>
 
         {/* Top bar — auto-hides */}
-        <div style={{
+        <div className="reader-topbar" style={{
           ...webStyles.topBar,
           backgroundColor: themes[activeTheme].bg,
           borderBottomColor: activeTheme === 'quiet' ? '#555' : '#e8e8e8',
@@ -746,7 +773,7 @@ export default function ReaderScreen() {
           pointerEvents: barsVisible ? 'auto' as const : 'none' as const,
         }}>
           <div style={webStyles.topBarLeft}>
-            <button onClick={() => router.back()} style={webStyles.iconButton} title="Back">
+            <button onClick={() => router.back()} className="reader-icon-btn" style={webStyles.iconButton} title="Back">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <polyline points="15 18 9 12 15 6" />
               </svg>
@@ -832,112 +859,33 @@ export default function ReaderScreen() {
 
         {/* Themes & Settings dropdown */}
         {showThemes && (
-          <div style={{ ...webStyles.themesDropdown, ...panelTheme }} data-popup>
-            <div style={webStyles.tocHeader}>
-              <strong>Themes & Settings</strong>
-              <button onClick={() => setShowThemes(false)} style={webStyles.iconButtonSmall}>
-                {'\u2715'}
-              </button>
-            </div>
-
-            {/* Font size controls */}
-            <div style={webStyles.fontSizeRow}>
-              <button
-                onClick={() => changeFontSize(-10)}
-                style={webStyles.fontSizeButton}
-                title="Decrease font size"
-              >
-                <span style={{ fontSize: '14px' }}>A</span>
-              </button>
-              <span style={{ fontSize: '13px', color: '#666', minWidth: '40px', textAlign: 'center' }}>
-                {fontSize}%
-              </span>
-              <button
-                onClick={() => changeFontSize(10)}
-                style={webStyles.fontSizeButton}
-                title="Increase font size"
-              >
-                <span style={{ fontSize: '20px' }}>A</span>
-              </button>
-            </div>
-
-            {/* Theme grid */}
-            <div style={webStyles.themeGrid}>
-              {(Object.keys(themes) as ThemeName[]).map((key) => {
-                const t = themes[key];
-                return (
-                  <button
-                    key={key}
-                    onClick={() => setTheme(key)}
-                    style={{
-                      ...webStyles.themeCard,
-                      backgroundColor: t.bg,
-                      color: t.text,
-                      border: activeTheme === key ? '2px solid #2f95dc' : '2px solid #e0e0e0',
-                      fontWeight: t.fontWeight === 'bold' ? 700 : 400,
-                      fontFamily: t.fontFamily || 'inherit',
-                    }}
-                  >
-                    <span style={{ fontSize: '22px', lineHeight: 1 }}>Aa</span>
-                    <span style={{ fontSize: '11px', marginTop: '4px' }}>{t.label}</span>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
+          <ThemesPanel
+            activeTheme={activeTheme}
+            fontSize={fontSize}
+            themes={themes}
+            onThemeChange={setTheme}
+            onFontSizeChange={changeFontSize}
+            panelTheme={panelTheme}
+            panelBorder={panelBorder}
+            onClose={() => setShowThemes(false)}
+          />
         )}
 
         {/* Search panel */}
-        {showSearch && (
-          <div style={{ ...webStyles.searchPanel, ...panelTheme }} data-popup>
-            <div style={webStyles.tocHeader}>
-              <strong>Search</strong>
-              <button onClick={() => { searchCancelRef.current = true; setShowSearch(false); setSearchQuery(''); setSearchResults([]); }} style={webStyles.iconButtonSmall}>
-                {'\u2715'}
-              </button>
-            </div>
-            <div style={{ padding: '8px 12px' }}>
-              <input
-                ref={searchInputRef}
-                type="text"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') handleSearch(searchQuery);
-                  if (e.key === 'Escape') { setShowSearch(false); setSearchQuery(''); setSearchResults([]); }
-                }}
-                placeholder="Search in book..."
-                style={webStyles.searchInput}
-              />
-            </div>
-            {isSearching && (
-              <div style={{ padding: '12px', fontSize: '13px', color: '#999', textAlign: 'center' }}>Searching...</div>
-            )}
-            {!isSearching && searchResults.length > 0 && (
-              <div style={webStyles.tocList}>
-                {searchResults.map((r, i) => (
-                  <button
-                    key={i}
-                    onClick={() => {
-                      if (renditionRef.current && r.cfi) renditionRef.current.display(r.cfi);
-                    }}
-                    style={webStyles.tocItem}
-                  >
-                    <span dangerouslySetInnerHTML={{
-                      __html: r.excerpt.replace(/<[^>]*>/g, '').replace(
-                        new RegExp(`(${searchQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi'),
-                        '<mark style="background:#FFEB3B;padding:0 1px;border-radius:2px">$1</mark>'
-                      )
-                    }} />
-                  </button>
-                ))}
-              </div>
-            )}
-            {!isSearching && searchQuery && searchResults.length === 0 && (
-              <div style={{ padding: '12px', fontSize: '13px', color: '#999', textAlign: 'center' }}>No results found</div>
-            )}
-          </div>
-        )}
+        <SearchPanel
+          showSearch={showSearch}
+          searchQuery={searchQuery}
+          searchResults={searchResults}
+          isSearching={isSearching}
+          onQueryChange={setSearchQuery}
+          onSearch={handleSearch}
+          onNavigate={(r) => { if (renditionRef.current && r.cfi) renditionRef.current.display(r.cfi); }}
+          onClose={() => { searchCancelRef.current = true; setShowSearch(false); setSearchQuery(''); setSearchResults([]); }}
+          themeColors={themeColors}
+          panelTheme={panelTheme}
+          panelBorder={panelBorder}
+          searchInputRef={searchInputRef}
+        />
 
         {/* Keyboard shortcuts overlay */}
         {showShortcuts && (
@@ -971,277 +919,51 @@ export default function ReaderScreen() {
 
         {/* Bookmarks dropdown */}
         {bmState.showBookmarks && (
-          <div style={{ ...webStyles.bookmarksDropdown, ...panelTheme }}>
-            <div style={webStyles.tocHeader}>
-              <strong>Bookmarks</strong>
-              <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
-                <button
-                  onClick={bmState.toggleBookmark}
-                  style={{
-                    ...webStyles.iconButtonSmall,
-                    color: bmState.bookmarks.some((b) => b.page === currentPage) ? '#2f95dc' : undefined,
-                  }}
-                  title={bmState.bookmarks.some((b) => b.page === currentPage) ? 'Remove bookmark' : 'Bookmark this page'}
-                >
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill={bmState.bookmarks.some((b) => b.page === currentPage) ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" strokeLinejoin="round">
-                    <path d="M6 4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18l-6-4-6 4V4z" />
-                  </svg>
-                </button>
-                <button
-                  onClick={() => bmState.setShowBookmarks(false)}
-                  style={webStyles.iconButtonSmall}
-                >
-                  {'\u2715'}
-                </button>
-              </div>
-            </div>
-            {bmState.bookmarks.length === 0 ? (
-              <div style={webStyles.bookmarksEmpty}>
-                <div style={{ fontWeight: 500, marginBottom: '4px' }}>No Bookmarks</div>
-                <div style={{ fontSize: '12px', opacity: 0.6 }}>
-                  Click the bookmark icon above to bookmark the current page.
-                </div>
-              </div>
-            ) : (
-              <div style={webStyles.tocList}>
-                {bmState.bookmarks
-                  .sort((a, b) => a.page - b.page)
-                  .map((b) => (
-                    <div key={b.id} style={webStyles.bookmarkItem}>
-                      {bmState.editingBookmarkId === b.id ? (
-                        <div style={{ flex: 1, padding: '8px 12px' }}>
-                          <input
-                            type="text"
-                            value={bmState.bookmarkTitleInput}
-                            onChange={(e) => bmState.setBookmarkTitleInput(e.target.value)}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter') bmState.saveBookmarkTitle(b.id);
-                              if (e.key === 'Escape') { bmState.setEditingBookmarkId(null); bmState.setBookmarkTitleInput(''); }
-                            }}
-                            onBlur={() => bmState.saveBookmarkTitle(b.id)}
-                            placeholder="Bookmark title..."
-                            autoFocus
-                            style={webStyles.bookmarkTitleInput}
-                          />
-                        </div>
-                      ) : (
-                        <button
-                          onClick={() => navigateToBookmark(b.cfi || '')}
-                          style={webStyles.bookmarkLink}
-                        >
-                          <span>{b.label || 'Untitled'}</span>
-                          <span style={webStyles.bookmarkPage}>p. {b.page}</span>
-                        </button>
-                      )}
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '2px', paddingRight: '4px' }}>
-                        <button
-                          onClick={() => { bmState.setEditingBookmarkId(b.id); bmState.setBookmarkTitleInput(b.label); }}
-                          style={webStyles.iconButtonSmall}
-                          title="Rename"
-                        >
-                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" />
-                          </svg>
-                        </button>
-                        <button
-                          onClick={() => bmState.removeBookmark(b.id)}
-                          style={webStyles.iconButtonSmall}
-                          title="Remove bookmark"
-                        >
-                          {'\u2715'}
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-              </div>
-            )}
-          </div>
+          <BookmarksPanel
+            bmState={bmState}
+            currentPage={currentPage}
+            themeColors={themeColors}
+            panelTheme={panelTheme}
+            panelBorder={panelBorder}
+            onNavigate={(target) => navigateToBookmark(String(target))}
+            variant="epub"
+          />
         )}
 
         {/* Highlights & Notes dropdown */}
         {hlState.showHighlights && (
-          <div style={{ ...webStyles.highlightsDropdown, ...panelTheme }}>
-            <div style={webStyles.tocHeader}>
-              <strong>Highlights & Notes</strong>
-              <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
-                {hlState.highlights.length > 0 && (
-                  <>
-                    <button
-                      onClick={hlState.handleDriveExport}
-                      disabled={hlState.isExportingDrive}
-                      style={{ ...webStyles.iconButtonSmall, opacity: hlState.isExportingDrive ? 0.4 : 1 }}
-                      title="Export Cornell Notes to Google Drive"
-                    >
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M12 2L2 7l10 5 10-5-10-5z" /><path d="M2 17l10 5 10-5" /><path d="M2 12l10 5 10-5" />
-                      </svg>
-                    </button>
-                    <button
-                      onClick={hlState.exportHighlightsAsText}
-                      style={webStyles.iconButtonSmall}
-                      title="Export highlights as text file"
-                    >
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                        <polyline points="7 10 12 15 17 10" />
-                        <line x1="12" y1="15" x2="12" y2="3" />
-                      </svg>
-                    </button>
-                  </>
-                )}
-                <button
-                  onClick={() => hlState.setShowHighlights(false)}
-                  style={webStyles.iconButtonSmall}
-                >
-                  {'\u2715'}
-                </button>
-              </div>
-            </div>
-            {hlState.highlights.length === 0 ? (
-              <div style={webStyles.bookmarksEmpty}>
-                <div style={{ fontWeight: 500, marginBottom: '4px' }}>No Highlights or Notes</div>
-                <div style={{ fontSize: '12px', opacity: 0.6 }}>
-                  Select text, then choose a color or click Add Note.
-                </div>
-              </div>
-            ) : (
-              <div style={webStyles.tocList}>
-                {hlState.highlights.map((h) => (
-                  <div key={h.id} style={webStyles.highlightDropdownItem}>
-                    {/* Color bar */}
-                    <div
-                      style={{
-                        width: '4px',
-                        alignSelf: 'stretch',
-                        backgroundColor: HIGHLIGHT_COLORS[h.color],
-                        borderRadius: '2px',
-                        flexShrink: 0,
-                      }}
-                    />
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      {/* Clickable text to navigate */}
-                      <button
-                        onClick={() => {
-                          if (h.cfiRange && renditionRef.current) {
-                            renditionRef.current.display(h.cfiRange);
-                          }
-                        }}
-                        style={webStyles.highlightTextButton}
-                      >
-                        "{h.selectedText.length > 80
-                          ? h.selectedText.slice(0, 80) + '...'
-                          : h.selectedText}"
-                      </button>
-
-                      {/* Note editing */}
-                      {hlState.editingHighlightId === h.id ? (
-                        <div style={{ padding: '0 12px 8px 12px' }}>
-                          <textarea
-                            value={hlState.editNoteText}
-                            onChange={(e) => hlState.setEditNoteText(e.target.value)}
-                            style={webStyles.noteInput}
-                            rows={2}
-                            autoFocus
-                          />
-                          <div style={{ display: 'flex', gap: '6px', marginTop: '4px' }}>
-                            <button
-                              onClick={() => hlState.setEditingHighlightId(null)}
-                              style={webStyles.popupButtonCancel}
-                            >
-                              Cancel
-                            </button>
-                            <button
-                              onClick={hlState.saveEditNote}
-                              style={webStyles.popupButtonSave}
-                            >
-                              Save
-                            </button>
-                          </div>
-                        </div>
-                      ) : (
-                        <div style={{ padding: '0 12px 8px 12px' }}>
-                          {h.note && (
-                            <div style={{
-                              fontSize: '12px',
-                              color: '#555',
-                              fontStyle: 'italic',
-                              marginBottom: '4px',
-                            }}>
-                              {h.note}
-                            </div>
-                          )}
-                          <div style={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: '8px',
-                            fontSize: '11px',
-                            opacity: 0.4,
-                          }}>
-                            <span>{h.pageInfo}</span>
-                            <span>{'\u00B7'}</span>
-                            <button
-                              onClick={() => hlState.startEditNote(h)}
-                              style={webStyles.sidebarAction}
-                            >
-                              {h.note ? 'Edit note' : 'Add note'}
-                            </button>
-                            <button
-                              onClick={() => hlState.removeHighlight(h.id)}
-                              style={webStyles.sidebarAction}
-                            >
-                              Delete
-                            </button>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
+          <HighlightsPanel
+            hlState={hlState}
+            themeColors={themeColors}
+            panelTheme={panelTheme}
+            panelBorder={panelBorder}
+            onNavigate={(h) => {
+              if (h.cfiRange && renditionRef.current) {
+                renditionRef.current.display(h.cfiRange);
+              }
+            }}
+            HIGHLIGHT_COLORS={HIGHLIGHT_COLORS}
+            variant="epub"
+          />
         )}
 
         {/* Main content */}
         <div style={webStyles.mainContent}>
           {/* Table of Contents panel */}
           {showToc && (
-            <div style={{ ...webStyles.tocPanel, ...panelTheme }}>
-              <div style={webStyles.tocHeader}>
-                <strong>Contents</strong>
-                <button
-                  onClick={() => setShowToc(false)}
-                  style={webStyles.iconButtonSmall}
-                >
-                  {'\u2715'}
-                </button>
-              </div>
-              <div style={webStyles.tocList}>
-                {tocItems.map((item, i) => (
-                  <button
-                    key={i}
-                    onClick={() => navigateToChapter(item.href)}
-                    style={{
-                      ...webStyles.tocItem,
-                      paddingLeft: `${16 + item.level * 16}px`,
-                      color: themeColors.text,
-                      borderBottomColor: panelBorder,
-                    }}
-                  >
-                    {item.label}
-                  </button>
-                ))}
-                {tocItems.length === 0 && (
-                  <div style={{ padding: '20px 16px', opacity: 0.4, fontSize: '13px' }}>
-                    No table of contents available.
-                  </div>
-                )}
-              </div>
-            </div>
+            <TocPanel
+              tocItems={tocItems}
+              themeColors={themeColors}
+              panelTheme={panelTheme}
+              panelBorder={panelBorder}
+              onNavigate={(target) => navigateToChapter(String(target))}
+              onClose={() => setShowToc(false)}
+              variant="sidebar"
+            />
           )}
 
           {/* Page turn arrow — left */}
-          <button onClick={prevPage} style={{ ...webStyles.pageChevron, ...webStyles.pageChevronLeft, color: themes[activeTheme].text }}>
+          <button className="reader-pagechevron" onClick={prevPage} style={{ ...webStyles.pageChevron, ...webStyles.pageChevronLeft, color: themes[activeTheme].text }}>
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
               <polyline points="15 18 9 12 15 6" />
             </svg>
@@ -1251,20 +973,21 @@ export default function ReaderScreen() {
           <div style={webStyles.readerPanel}>
             {isLoading && !error && (
               <div style={webStyles.overlay}>
-                <p style={{ color: '#999' }}>Loading book...</p>
+                <div style={{ width: '28px', height: '28px', border: '3px solid #e0e0e0', borderTopColor: '#2f95dc', borderRadius: '50%', animation: 'spin 0.8s linear infinite', marginBottom: '12px' }} />
+                <p style={{ color: '#999', fontSize: '14px' }}>Loading book...</p>
               </div>
             )}
             {error && (
               <div style={webStyles.overlay}>
-                <p style={{ color: 'red' }}>Error: {error}</p>
-                <button onClick={() => router.back()}>Go Back</button>
+                <p style={{ color: '#e55', fontSize: '14px', marginBottom: '12px' }}>Error: {error}</p>
+                <button onClick={() => router.back()} style={{ padding: '8px 20px', backgroundColor: '#2f95dc', color: '#fff', border: 'none', borderRadius: '8px', fontSize: '14px', cursor: 'pointer' }}>Go Back</button>
               </div>
             )}
             <div ref={viewerRef} style={webStyles.reader} />
           </div>
 
           {/* Page turn arrow — right */}
-          <button onClick={nextPage} style={{ ...webStyles.pageChevron, ...webStyles.pageChevronRight, color: themes[activeTheme].text }}>
+          <button className="reader-pagechevron" onClick={nextPage} style={{ ...webStyles.pageChevron, ...webStyles.pageChevronRight, color: themes[activeTheme].text }}>
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
               <polyline points="9 18 15 12 9 6" />
             </svg>
@@ -1499,7 +1222,7 @@ export default function ReaderScreen() {
 
         {/* TTS Player */}
         {wordsReady && (
-          <div style={{ ...webStyles.ttsBar, backgroundColor: themes[activeTheme].bg, borderTopColor: activeTheme === 'quiet' ? '#555' : '#eee', opacity: barsVisible ? 1 : 0, transition: 'opacity 0.3s', pointerEvents: barsVisible ? 'auto' as const : 'none' as const }}>
+          <div className="reader-ttsbar" style={{ ...webStyles.ttsBar, backgroundColor: themes[activeTheme].bg, borderTopColor: activeTheme === 'quiet' ? '#555' : '#eee', opacity: barsVisible ? 1 : 0, transition: 'opacity 0.3s', pointerEvents: barsVisible ? 'auto' as const : 'none' as const }}>
             <button onClick={tts.handleStop} style={webStyles.ttsButton}>
               {'\u25A0'}
             </button>
@@ -1591,6 +1314,17 @@ export default function ReaderScreen() {
           </div>
         )}
       </div>
+    );
+  }
+
+  function highlightSearchMatch(text: string, query: string): React.ReactNode {
+    if (!query) return text;
+    const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const parts = text.split(new RegExp(`(${escaped})`, 'gi'));
+    return parts.map((part, i) =>
+      part.toLowerCase() === query.toLowerCase()
+        ? <mark key={i} style={{ background: '#FFEB3B', padding: '0 1px', borderRadius: '2px' }}>{part}</mark>
+        : part
     );
   }
 

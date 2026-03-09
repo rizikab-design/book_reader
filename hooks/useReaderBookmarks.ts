@@ -27,7 +27,11 @@ export function useReaderBookmarks({ bookId, currentPage, showToast, getCurrentC
       showToast('Bookmark removed');
     } else {
       const newId = ++bookmarkIdRef.current;
-      localStorage.setItem(bookKey(bookId, 'bookmarkNextId'), JSON.stringify(bookmarkIdRef.current));
+      try {
+        localStorage.setItem(bookKey(bookId, 'bookmarkNextId'), JSON.stringify(bookmarkIdRef.current));
+      } catch (e) {
+        console.warn('Failed to persist bookmark counter:', e);
+      }
       const bookmark: ReaderBookmark = {
         id: newId,
         page: currentPage,

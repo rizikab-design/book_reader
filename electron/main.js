@@ -1,6 +1,7 @@
 const { app, BrowserWindow, shell } = require('electron');
 const path = require('path');
-const { fork } = require('child_process');
+const { spawn } = require('child_process');
+const http = require('http');
 
 let mainWindow;
 let serverProcess;
@@ -8,25 +9,59 @@ let serverProcess;
 const PORT = 3001;
 
 function startServer() {
-  // In packaged app, server is in resources/server; in dev, it's ../server
   const isPacked = app.isPackaged;
   const serverPath = isPacked
     ? path.join(process.resourcesPath, 'server', 'index.js')
     : path.join(__dirname, '..', 'server', 'index.js');
 
-  // In packaged app, store data in ~/Library/Application Support/Book Reader
   const env = { ...process.env, PORT: String(PORT) };
   if (isPacked) {
     env.DATA_DIR = app.getPath('userData');
   }
 
-  serverProcess = fork(serverPath, [], { env, silent: true });
+  // Use spawn with the current Node executable so it works in packaged app
+  serverProcess = spawn(process.execPath, [serverPath], {
+    env,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
 
-  serverProcess.stdout?.on('data', (data) => {
+  serverProcess.stdout.on('data', (data) => {
     console.log(`[server] ${data.toString().trim()}`);
   });
-  serverProcess.stderr?.on('data', (data) => {
+  serverProcess.stderr.on('data', (data) => {
     console.error(`[server] ${data.toString().trim()}`);
+  });
+  serverProcess.on('error', (err) => {
+    console.error('[server] Failed to start:', err.message);
+  });
+}
+
+// Poll until the server responds, then resolve
+function waitForServer(maxRetries = 30) {
+  return new Promise((resolve, reject) => {
+    let attempts = 0;
+    const check = () => {
+      attempts++;
+      const req = http.get(`http://localhost:${PORT}/api/books`, (res) => {
+        resolve();
+      });
+      req.on('error', () => {
+        if (attempts >= maxRetries) {
+          reject(new Error('Server did not start in time'));
+        } else {
+          setTimeout(check, 500);
+        }
+      });
+      req.setTimeout(1000, () => {
+        req.destroy();
+        if (attempts >= maxRetries) {
+          reject(new Error('Server did not start in time'));
+        } else {
+          setTimeout(check, 500);
+        }
+      });
+    };
+    check();
   });
 }
 
@@ -44,10 +79,7 @@ function createWindow() {
     },
   });
 
-  // Wait for server to start, then load
-  setTimeout(() => {
-    mainWindow.loadURL(`http://localhost:${PORT}`);
-  }, 1500);
+  mainWindow.loadURL(`http://localhost:${PORT}`);
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url);
@@ -59,8 +91,15 @@ function createWindow() {
   });
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   startServer();
+
+  try {
+    await waitForServer();
+  } catch (err) {
+    console.error(err.message);
+  }
+
   createWindow();
 
   app.on('activate', () => {

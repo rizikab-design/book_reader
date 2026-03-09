@@ -9,7 +9,7 @@
     "web": "expo start --web",
     "build:web": "expo export --platform web",
     "electron:dev": "npm run build:web && electron electron/main.js",
-    "electron:build": "npm run build:web && electron-builder --mac && cp -R server/node_modules \"dist/mac-arm64/Book Reader.app/Contents/Resources/server/node_modules\""
+    "electron:build": "npm run build:web && electron-builder --mac"
   },
   "dependencies": {
     "@epubjs-react-native/core": "^1.4.7",

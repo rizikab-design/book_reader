@@ -46,9 +46,7 @@ function RootLayoutNav() {
       <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
         <Stack>
           <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-          <Stack.Screen name="upload" options={{ title: 'Upload Book', presentation: 'modal' }} />
           <Stack.Screen name="reader/[bookId]" options={{ headerShown: false }} />
-          <Stack.Screen name="notes/[bookId]" options={{ title: 'My Notes' }} />
         </Stack>
       </ThemeProvider>
     </ReaderProvider>

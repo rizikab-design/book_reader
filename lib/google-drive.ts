@@ -15,6 +15,16 @@
 
 const SCOPES = 'https://www.googleapis.com/auth/drive.file';
 
+// ── Token cache ──────────────────────────────────────────────────────
+let cachedToken: string | null = null;
+let cachedTokenExpiry = 0;
+const TOKEN_LIFETIME_MS = 3600 * 1000; // Google tokens last 1 hour
+
+export function clearTokenCache() {
+  cachedToken = null;
+  cachedTokenExpiry = 0;
+}
+
 export function getGoogleClientId(): string {
   return localStorage.getItem('google-drive-client-id') || '';
 }
@@ -38,6 +48,11 @@ function loadScript(src: string): Promise<void> {
 }
 
 export async function getAccessToken(): Promise<string> {
+  // Return cached token if still valid
+  if (cachedToken && Date.now() < cachedTokenExpiry) {
+    return cachedToken;
+  }
+
   const clientId = getGoogleClientId();
   if (!clientId) {
     throw new Error('Google Client ID not set. Go to Settings to configure Google Drive.');
@@ -55,11 +70,13 @@ export async function getAccessToken(): Promise<string> {
     const tokenClient = google.accounts.oauth2.initTokenClient({
       client_id: clientId,
       scope: SCOPES,
-      callback: (response: any) => {
+      callback: (response: { error?: string; error_description?: string; access_token: string }) => {
         if (response.error) {
           reject(new Error(response.error_description || response.error));
           return;
         }
+        cachedToken = response.access_token;
+        cachedTokenExpiry = Date.now() + TOKEN_LIFETIME_MS;
         resolve(response.access_token);
       },
     });
@@ -74,6 +91,7 @@ async function findOrCreateFolder(accessToken: string, folderName: string): Prom
     `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&spaces=drive`,
     { headers: { Authorization: `Bearer ${accessToken}` } }
   );
+  if (searchRes.status === 401) { clearTokenCache(); throw new Error('Google token expired. Please try again.'); }
   const searchData = await searchRes.json();
   if (searchData.files?.length > 0) return searchData.files[0].id;
 
@@ -172,6 +190,7 @@ export async function exportCornellNotes(
     }
   );
 
+  if (uploadRes.status === 401) { clearTokenCache(); throw new Error('Google token expired. Please try again.'); }
   if (!uploadRes.ok) {
     const err = await uploadRes.text();
     throw new Error(`Upload failed: ${err}`);
