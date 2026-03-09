@@ -1,10 +1,9 @@
-const { app, BrowserWindow, shell } = require('electron');
+const { app, BrowserWindow, shell, utilityProcess } = require('electron');
 const path = require('path');
-const { spawn } = require('child_process');
 const http = require('http');
 
 let mainWindow;
-let serverProcess;
+let serverUtility;
 
 const PORT = 3001;
 
@@ -14,26 +13,27 @@ function startServer() {
     ? path.join(process.resourcesPath, 'server', 'index.js')
     : path.join(__dirname, '..', 'server', 'index.js');
 
-  const env = { ...process.env, PORT: String(PORT) };
+  const env = { PORT: String(PORT) };
   if (isPacked) {
     env.DATA_DIR = app.getPath('userData');
   }
 
-  // Use spawn with the current Node executable so it works in packaged app
-  serverProcess = spawn(process.execPath, [serverPath], {
-    env,
-    stdio: ['ignore', 'pipe', 'pipe'],
+  // Use utilityProcess.fork — runs in a Node.js child process, not another Electron instance
+  serverUtility = utilityProcess.fork(serverPath, [], {
+    env: { ...process.env, ...env },
+    stdio: 'pipe',
   });
 
-  serverProcess.stdout.on('data', (data) => {
-    console.log(`[server] ${data.toString().trim()}`);
-  });
-  serverProcess.stderr.on('data', (data) => {
-    console.error(`[server] ${data.toString().trim()}`);
-  });
-  serverProcess.on('error', (err) => {
-    console.error('[server] Failed to start:', err.message);
-  });
+  if (serverUtility.stdout) {
+    serverUtility.stdout.on('data', (data) => {
+      console.log(`[server] ${data.toString().trim()}`);
+    });
+  }
+  if (serverUtility.stderr) {
+    serverUtility.stderr.on('data', (data) => {
+      console.error(`[server] ${data.toString().trim()}`);
+    });
+  }
 }
 
 // Poll until the server responds, then resolve
@@ -116,8 +116,8 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', () => {
-  if (serverProcess) {
-    serverProcess.kill();
-    serverProcess = null;
+  if (serverUtility) {
+    serverUtility.kill();
+    serverUtility = null;
   }
 });

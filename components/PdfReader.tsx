@@ -67,7 +67,7 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
 
   // ── Thumbnails ───────────────────────────────────────────────────────
   const [showThumbnails, setShowThumbnails] = useState(false);
-  const [thumbsLoaded, setThumbsLoaded] = useState(0);
+  const [thumbsLoaded, setThumbsLoaded] = useState(new Set<number>());
   const thumbnailsContainerRef = useRef<HTMLDivElement | null>(null);
   const thumbnailCacheRef = useRef<Map<number, string>>(new Map());
 
@@ -266,20 +266,28 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
     }
   }
 
-  // Load visible thumbnails when panel opens
+  // Lazy-load thumbnails via IntersectionObserver when they scroll into view
   useEffect(() => {
-    if (!showThumbnails || !pdfDocRef.current) return;
-    let cancelled = false;
-    async function loadThumbnails() {
-      for (let i = 1; i <= totalPages; i++) {
-        if (cancelled) break;
-        await renderThumbnail(i);
-        if (i % 5 === 0) setThumbsLoaded(i);
+    if (!showThumbnails || !pdfDocRef.current || !thumbnailsContainerRef.current) return;
+    const container = thumbnailsContainerRef.current;
+    const generating = new Set<number>();
+
+    const observer = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        const pageNum = Number((entry.target as HTMLElement).dataset.page);
+        if (!pageNum || thumbnailCacheRef.current.has(pageNum) || generating.has(pageNum)) continue;
+        generating.add(pageNum);
+        renderThumbnail(pageNum).then(() => {
+          setThumbsLoaded((prev) => new Set(prev).add(pageNum));
+        });
       }
-      if (!cancelled) setThumbsLoaded(totalPages);
-    }
-    loadThumbnails();
-    return () => { cancelled = true; };
+    }, { root: container, rootMargin: '200px' });
+
+    const slots = container.querySelectorAll('[data-page]');
+    slots.forEach((slot) => observer.observe(slot));
+
+    return () => observer.disconnect();
   }, [showThumbnails, totalPages]);
 
   // ── Render page ──────────────────────────────────────────────────────
@@ -701,13 +709,13 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
             {Array.from({ length: totalPages }, (_, i) => i + 1).map((pageNum) => {
               const thumbUrl = thumbnailCacheRef.current.get(pageNum);
               return (
-                <button key={pageNum} onClick={() => { setCurrentPage(pageNum); setShowThumbnails(false); }}
+                <button key={pageNum} data-page={pageNum} onClick={() => { setCurrentPage(pageNum); setShowThumbnails(false); }}
                   style={{ ...s.thumbnailItem, border: pageNum === currentPage ? '2px solid #2f95dc' : '2px solid transparent' }}>
                   {thumbUrl ? (
                     <img src={thumbUrl} alt={`Page ${pageNum}`} style={s.thumbnailImg} />
                   ) : (
                     <div style={s.thumbnailPlaceholder}>
-                      <span style={{ fontSize: '11px', color: '#999' }}>...</span>
+                      <span style={{ fontSize: '11px', color: '#999' }}>{pageNum}</span>
                     </div>
                   )}
                   <span style={{ fontSize: '10px', color: pageNum === currentPage ? '#2f95dc' : '#999', marginTop: '2px' }}>{pageNum}</span>
@@ -1006,15 +1014,8 @@ const s: Record<string, React.CSSProperties> = {
   speedDisplay: { background: 'none', border: '1px solid transparent', fontSize: '12px', color: '#555', cursor: 'pointer', padding: '3px 6px', borderRadius: '4px', minWidth: '36px', textAlign: 'center' },
   speedInput: { width: '44px', padding: '3px 6px', fontSize: '12px', textAlign: 'center', border: '1px solid #ccc', borderRadius: '4px', outline: 'none' },
   voiceSelect: { padding: '4px 8px', fontSize: '12px', border: '1px solid #ddd', borderRadius: '4px', backgroundColor: '#fff', color: '#555', maxWidth: '200px', cursor: 'pointer' },
-  dropdown: { position: 'absolute', top: '50px', width: '280px', maxHeight: '450px', backgroundColor: '#fafafa', border: '1px solid #e8e8e8', borderRadius: '8px', boxShadow: '0 4px 16px rgba(0,0,0,0.12)', zIndex: 50, display: 'flex', flexDirection: 'column', overflow: 'hidden' },
   dropdownHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px', borderBottom: '1px solid #eee', fontSize: '14px' },
   closeBtn: { background: 'none', border: 'none', fontSize: '14px', cursor: 'pointer', color: '#999', padding: '4px 8px' },
-  tocItem: { display: 'flex', justifyContent: 'space-between', width: '100%', background: 'none', border: 'none', borderBottom: '1px solid #f0f0f0', padding: '10px 16px', fontSize: '13px', color: '#333', cursor: 'pointer', textAlign: 'left', lineHeight: '1.4' },
-  fontSizeRow: { display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '16px', padding: '12px 16px', borderBottom: '1px solid #eee' },
-  fontSizeButton: { background: 'none', border: '1px solid #ddd', borderRadius: '8px', width: '44px', height: '36px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#333' },
-  themeGrid: { display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px', padding: '16px' },
-  themeCard: { display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '14px 8px', borderRadius: '12px', cursor: 'pointer', minHeight: '70px', transition: 'border-color 0.15s' },
-  searchInput: { width: '100%', padding: '8px 10px', fontSize: '13px', border: '1px solid #ddd', borderRadius: '6px', outline: 'none', boxSizing: 'border-box' },
   selectionPopup: { position: 'fixed', backgroundColor: '#fff', border: '1px solid #ddd', borderRadius: '12px', padding: '0 12px 12px 12px', boxShadow: '0 4px 16px rgba(0,0,0,0.15)', zIndex: 100, width: '280px' },
   cancelBtn: { background: 'none', border: '1px solid #ddd', borderRadius: '4px', padding: '5px 12px', fontSize: '12px', cursor: 'pointer', color: '#666' },
   saveBtn: { background: '#2f95dc', border: 'none', borderRadius: '4px', padding: '5px 12px', fontSize: '12px', cursor: 'pointer', color: '#fff' },

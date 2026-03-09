@@ -94,7 +94,7 @@ const storage = multer.diskStorage({
   filename: (req, file, cb) => {
     // Sanitize filename
     const safe = file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
-    const unique = `${Date.now()}-${safe}`;
+    const unique = `${crypto.randomUUID()}-${safe}`;
     cb(null, unique);
   },
 });

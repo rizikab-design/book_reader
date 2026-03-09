@@ -23,6 +23,7 @@ import { useReaderSearch } from '@/hooks/useReaderSearch';
 import { useReaderTts } from '@/hooks/useReaderTts';
 import { useReaderHighlights } from '@/hooks/useReaderHighlights';
 import { useReaderBookmarks } from '@/hooks/useReaderBookmarks';
+import { saveProgress } from '@/hooks/useSupabaseSync';
 
 import TocPanel from '@/components/reader/TocPanel';
 import BookmarksPanel from '@/components/reader/BookmarksPanel';
@@ -233,7 +234,17 @@ export default function ReaderScreen() {
       doc.head.appendChild(styleEl);
     }
 
-    const walker = doc.createTreeWalker(body, NodeFilter.SHOW_TEXT);
+    const SKIP_TAGS = new Set(['svg', 'math', 'script', 'style']);
+    const walker = doc.createTreeWalker(body, NodeFilter.SHOW_TEXT, {
+      acceptNode(node) {
+        let el = node.parentElement;
+        while (el) {
+          if (SKIP_TAGS.has(el.tagName.toLowerCase())) return NodeFilter.FILTER_REJECT;
+          el = el.parentElement;
+        }
+        return NodeFilter.FILTER_ACCEPT;
+      },
+    });
     const textNodes: globalThis.Text[] = [];
     while (walker.nextNode()) {
       textNodes.push(walker.currentNode as globalThis.Text);
@@ -248,8 +259,6 @@ export default function ReaderScreen() {
 
       const parent = textNode.parentNode as Element;
       if (!parent) continue;
-      const tagName = parent.tagName?.toLowerCase();
-      if (tagName === 'script' || tagName === 'style') continue;
 
       const parts = text.split(/(\s+)/);
       const fragment = doc.createDocumentFragment();
@@ -709,17 +718,15 @@ export default function ReaderScreen() {
         if (location.start?.percentage != null) {
           setBookProgress(location.start.percentage);
         }
-        // Debounce localStorage writes (500ms)
+        // Debounce progress writes (500ms)
         if (savePositionTimerRef.current) clearTimeout(savePositionTimerRef.current);
         savePositionTimerRef.current = setTimeout(() => {
           localStorage.setItem('reader-lastReadId', bookId!);
           localStorage.setItem('reader-lastReadTime', String(Date.now()));
-          if (location.start?.cfi) {
-            localStorage.setItem(`reader-${bookId}-position`, location.start.cfi);
-          }
-          if (location.start?.percentage != null) {
-            localStorage.setItem(`reader-${bookId}-progress`, String(location.start.percentage));
-          }
+          const cfi = location.start?.cfi || null;
+          const pct = location.start?.percentage ?? 0;
+          const page = location.start?.displayed?.page ?? null;
+          saveProgress(bookId!, pct, cfi, page);
         }, 500);
       });
 

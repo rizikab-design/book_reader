@@ -220,7 +220,7 @@ function splitIntoChunks(text: string): string[] {
   return chunks;
 }
 
-let neuralCancelled = false;
+let neuralGeneration = 0;
 
 async function speakNeural(
   text: string,
@@ -231,7 +231,8 @@ async function speakNeural(
 
   const allWords = text.split(/\s+/).filter((w) => w.length > 0);
   const chunks = splitIntoChunks(text);
-  neuralCancelled = false;
+  neuralGeneration++;
+  const myGeneration = neuralGeneration;
 
   // Compute the starting word offset for each chunk
   const chunkWordOffsets: number[] = [];
@@ -244,7 +245,7 @@ async function speakNeural(
   let isFirstChunk = true;
 
   for (let i = 0; i < chunks.length; i++) {
-    if (neuralCancelled) return;
+    if (neuralGeneration !== myGeneration) return;
 
     const chunk = chunks[i];
     const chunkWords = chunk.split(/\s+/).filter((w) => w.length > 0);
@@ -263,7 +264,7 @@ async function speakNeural(
         signal: abort.signal,
       });
 
-      if (abort.signal.aborted || neuralCancelled) return;
+      if (abort.signal.aborted || neuralGeneration !== myGeneration) return;
 
       if (!res.ok) {
         neuralLoading = false;
@@ -273,7 +274,7 @@ async function speakNeural(
       }
 
       const blob = await res.blob();
-      if (abort.signal.aborted || neuralCancelled) return;
+      if (abort.signal.aborted || neuralGeneration !== myGeneration) return;
 
       if (currentAudioUrl) URL.revokeObjectURL(currentAudioUrl);
       const url = URL.createObjectURL(blob);
@@ -322,7 +323,7 @@ async function speakNeural(
 
     } catch (err: unknown) {
       neuralLoading = false;
-      if (neuralCancelled) return;
+      if (neuralGeneration !== myGeneration) return;
       if (err instanceof DOMException && err.name === 'AbortError') return;
       callbacks.onError?.(err instanceof Error ? err.message : 'Neural TTS failed');
       return;
@@ -352,7 +353,7 @@ export function stopSpeaking(): void {
   clearWordTimer();
   clearChromeKeepAlive();
   // Cancel chunked neural playback
-  neuralCancelled = true;
+  neuralGeneration++;
   // Abort any pending neural TTS fetch
   if (currentAbort) {
     currentAbort.abort();
