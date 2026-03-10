@@ -10,7 +10,6 @@ import { StyleSheet, Pressable, Platform } from 'react-native';
 import { useLocalSearchParams, router } from 'expo-router';
 
 import { Text, View } from '@/components/Themed';
-import { stopSpeaking } from '@/lib/tts-engine';
 import { getBookUrl, fetchBooks, BookEntry } from '@/lib/api';
 import PdfReader from '@/components/PdfReader';
 import type { EpubContents, EpubLocation, EpubNavItem, EpubSpineItem } from '@/types/epub';
@@ -168,7 +167,7 @@ export default function ReaderScreen() {
     }
     loadBook();
     return () => {
-      cleanupIframeListeners();
+      cleanupIframeListeners(iframeListenersRef);
       if (renditionRef.current) {
         try { renditionRef.current.destroy(); } catch (e) { console.warn('Failed to destroy rendition:', e); }
       }
@@ -238,7 +237,7 @@ export default function ReaderScreen() {
       createdAt: new Date().toLocaleTimeString(),
     });
     if (hlState.selectionPopup.range) {
-      applyHighlightToRange(hlState.selectionPopup.range, hlState.selectedColor);
+      applyHighlightToRange(getIframeDocument(), hlState.selectionPopup.range, hlState.selectedColor);
     }
     const iframeDoc = getIframeDocument();
     if (iframeDoc) iframeDoc.getSelection()?.removeAllRanges();
@@ -387,7 +386,7 @@ export default function ReaderScreen() {
         try {
           const doc = contents.document;
           if (doc) {
-            cleanupIframeListeners();
+            cleanupIframeListeners(iframeListenersRef);
 
             const words = injectWordSpans(doc);
             iframeWordsArrayRef.current = words;
@@ -400,43 +399,12 @@ export default function ReaderScreen() {
             applyThemeToIframe(doc, activeThemeRef.current, fontSizeRef.current);
 
             // Listen for text selection and word clicks in the iframe
-            setupSelectionListener(doc);
-            setupWordClickListener(doc);
-            setupDblClickListener(doc);
+            setupSelectionListener(iframeListenersRef, doc, iframeEventDeps);
+            setupWordClickListener(iframeListenersRef, doc, iframeEventDeps);
+            setupDblClickListener(iframeListenersRef, doc, iframeEventDeps);
 
             // Re-apply saved highlights to this page's word spans
-            const currentHighlights = hlState.highlightsRef.current;
-            if (currentHighlights.length > 0 && words.length > 0) {
-              // Build a map keyed by lowercase first word → list of highlights
-              const firstWordMap = new Map<string, typeof currentHighlights>();
-              for (const h of currentHighlights) {
-                const hWords = h.selectedText.split(/\s+/);
-                if (hWords.length === 0) continue;
-                const key = hWords[0].toLowerCase();
-                const list = firstWordMap.get(key);
-                if (list) list.push(h);
-                else firstWordMap.set(key, [h]);
-              }
-
-              // Scan words once, checking first-word matches from the map
-              for (let i = 0; i < words.length; i++) {
-                const candidates = firstWordMap.get(words[i].toLowerCase());
-                if (!candidates) continue;
-                for (const h of candidates) {
-                  const hWords = h.selectedText.split(/\s+/);
-                  if (i + hWords.length > words.length) continue;
-                  const match = hWords.every((hw, j) =>
-                    words[i + j].toLowerCase() === hw.toLowerCase()
-                  );
-                  if (match) {
-                    for (let j = 0; j < hWords.length; j++) {
-                      const span = doc.querySelector(`[data-tts-idx="${i + j}"]`);
-                      if (span) (span as HTMLElement).classList.add(`user-highlight-${h.color}`);
-                    }
-                  }
-                }
-              }
-            }
+            reapplyHighlights(doc, hlState.highlightsRef.current, words);
 
             // Auto-continue TTS on new page if it was playing
             if (tts.isPlayingRef.current) {

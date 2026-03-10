@@ -6,6 +6,7 @@
 
 import React from 'react';
 import type { SearchResult } from '@/hooks/useReaderSearch';
+import { PANEL_STYLES } from '@/lib/styles';
 
 interface SearchPanelProps {
   showSearch: boolean;
@@ -50,9 +51,9 @@ export default function SearchPanel({
 
   return (
     <div className="reader-panel-dropdown" style={{ ...styles.searchPanel, ...panelTheme }} data-popup>
-      <div style={styles.dropdownHeader}>
+      <div style={PANEL_STYLES.dropdownHeader}>
         <strong>Search</strong>
-        <button onClick={onClose} style={styles.iconButtonSmall}>
+        <button onClick={onClose} style={PANEL_STYLES.iconButtonSmall}>
           {'\u2715'}
         </button>
       </div>
@@ -100,27 +101,12 @@ export default function SearchPanel({
 
 const styles: Record<string, React.CSSProperties> = {
   searchPanel: {
+    ...PANEL_STYLES.dropdown,
     position: 'absolute',
     top: '44px',
     right: '100px',
     width: '320px',
     maxHeight: '450px',
-    backgroundColor: '#fafafa',
-    border: '1px solid #e8e8e8',
-    borderRadius: '8px',
-    boxShadow: '0 4px 16px rgba(0,0,0,0.12)',
-    zIndex: 50,
-    display: 'flex',
-    flexDirection: 'column',
-    overflow: 'hidden',
-  },
-  dropdownHeader: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: '12px 16px',
-    borderBottom: '1px solid #eee',
-    fontSize: '14px',
   },
   searchInput: {
     width: '100%',
@@ -147,13 +133,5 @@ const styles: Record<string, React.CSSProperties> = {
     color: '#333',
     cursor: 'pointer',
     lineHeight: '1.4',
-  },
-  iconButtonSmall: {
-    background: 'none',
-    border: 'none',
-    fontSize: '14px',
-    cursor: 'pointer',
-    padding: '4px 8px',
-    color: '#999',
   },
 };

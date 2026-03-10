@@ -6,6 +6,7 @@
 
 import React from 'react';
 import type { HighlightColor, ReaderHighlight } from '@/hooks/reader-types';
+import { PANEL_STYLES } from '@/lib/styles';
 
 export interface HighlightsPanelHlState {
   highlights: ReaderHighlight[];
@@ -46,7 +47,7 @@ export default function HighlightsPanel({
 }: HighlightsPanelProps) {
   return (
     <div className="reader-panel-dropdown" style={{ ...styles.highlightsDropdown, ...panelTheme }}>
-      <div style={styles.dropdownHeader}>
+      <div style={PANEL_STYLES.dropdownHeader}>
         <strong>Highlights & Notes</strong>
         <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
           {hlState.highlights.length > 0 && (
@@ -54,7 +55,7 @@ export default function HighlightsPanel({
               <button
                 onClick={hlState.handleDriveExport}
                 disabled={hlState.isExportingDrive}
-                style={{ ...styles.iconButtonSmall, opacity: hlState.isExportingDrive ? 0.4 : 1 }}
+                style={{ ...PANEL_STYLES.iconButtonSmall, opacity: hlState.isExportingDrive ? 0.4 : 1 }}
                 title="Export Cornell Notes to Google Drive"
               >
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -63,7 +64,7 @@ export default function HighlightsPanel({
               </button>
               <button
                 onClick={hlState.exportHighlightsAsText}
-                style={styles.iconButtonSmall}
+                style={PANEL_STYLES.iconButtonSmall}
                 title="Export highlights as text file"
               >
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -76,14 +77,14 @@ export default function HighlightsPanel({
           )}
           <button
             onClick={() => hlState.setShowHighlights(false)}
-            style={styles.iconButtonSmall}
+            style={PANEL_STYLES.iconButtonSmall}
           >
             {'\u2715'}
           </button>
         </div>
       </div>
       {hlState.highlights.length === 0 ? (
-        <div style={styles.emptyState}>
+        <div style={PANEL_STYLES.emptyState}>
           <div style={{ fontWeight: 500, marginBottom: '4px' }}>No Highlights or Notes</div>
           <div style={{ fontSize: '12px', opacity: 0.6 }}>
             {variant === 'pdf'
@@ -223,33 +224,12 @@ export default function HighlightsPanel({
 
 const styles: Record<string, React.CSSProperties> = {
   highlightsDropdown: {
+    ...PANEL_STYLES.dropdown,
     position: 'absolute',
     top: '44px',
     left: '12px',
     width: '300px',
     maxHeight: '500px',
-    backgroundColor: '#fafafa',
-    border: '1px solid #e8e8e8',
-    borderRadius: '8px',
-    boxShadow: '0 4px 16px rgba(0,0,0,0.12)',
-    zIndex: 50,
-    display: 'flex',
-    flexDirection: 'column',
-    overflow: 'hidden',
-  },
-  dropdownHeader: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: '12px 16px',
-    borderBottom: '1px solid #eee',
-    fontSize: '14px',
-  },
-  emptyState: {
-    padding: '30px 20px',
-    textAlign: 'center',
-    color: '#999',
-    fontSize: '13px',
   },
   highlightsList: {
     flex: 1,
@@ -314,13 +294,5 @@ const styles: Record<string, React.CSSProperties> = {
     cursor: 'pointer',
     fontSize: '11px',
     padding: 0,
-  },
-  iconButtonSmall: {
-    background: 'none',
-    border: 'none',
-    fontSize: '14px',
-    cursor: 'pointer',
-    padding: '4px 8px',
-    color: '#999',
   },
 };

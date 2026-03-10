@@ -6,6 +6,7 @@
 
 import React from 'react';
 import type { ThemeName, ThemeConfig } from '@/hooks/reader-types';
+import { PANEL_STYLES } from '@/lib/styles';
 
 interface ThemesPanelProps {
   activeTheme: ThemeName;
@@ -29,9 +30,9 @@ export default function ThemesPanel({
 }: ThemesPanelProps) {
   return (
     <div className="reader-panel-dropdown" style={{ ...styles.themesDropdown, ...panelTheme }} data-popup>
-      <div style={styles.dropdownHeader}>
+      <div style={PANEL_STYLES.dropdownHeader}>
         <strong>Themes & Settings</strong>
-        <button onClick={onClose} style={styles.iconButtonSmall}>
+        <button onClick={onClose} style={PANEL_STYLES.iconButtonSmall}>
           {'\u2715'}
         </button>
       </div>
@@ -97,14 +98,6 @@ const styles: Record<string, React.CSSProperties> = {
     zIndex: 50,
     overflow: 'hidden',
   },
-  dropdownHeader: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: '12px 16px',
-    borderBottom: '1px solid #eee',
-    fontSize: '14px',
-  },
   fontSizeRow: {
     display: 'flex',
     alignItems: 'center',
@@ -141,13 +134,5 @@ const styles: Record<string, React.CSSProperties> = {
     cursor: 'pointer',
     minHeight: '70px',
     transition: 'border-color 0.15s',
-  },
-  iconButtonSmall: {
-    background: 'none',
-    border: 'none',
-    fontSize: '14px',
-    cursor: 'pointer',
-    padding: '4px 8px',
-    color: '#999',
   },
 };
