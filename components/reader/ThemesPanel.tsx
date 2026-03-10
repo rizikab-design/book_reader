@@ -28,7 +28,7 @@ export default function ThemesPanel({
   onClose,
 }: ThemesPanelProps) {
   return (
-    <div style={{ ...styles.themesDropdown, ...panelTheme }} data-popup>
+    <div className="reader-panel-dropdown" style={{ ...styles.themesDropdown, ...panelTheme }} data-popup>
       <div style={styles.dropdownHeader}>
         <strong>Themes & Settings</strong>
         <button onClick={onClose} style={styles.iconButtonSmall}>

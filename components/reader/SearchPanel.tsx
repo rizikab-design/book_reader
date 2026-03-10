@@ -49,7 +49,7 @@ export default function SearchPanel({
   if (!showSearch) return null;
 
   return (
-    <div style={{ ...styles.searchPanel, ...panelTheme }} data-popup>
+    <div className="reader-panel-dropdown" style={{ ...styles.searchPanel, ...panelTheme }} data-popup>
       <div style={styles.dropdownHeader}>
         <strong>Search</strong>
         <button onClick={onClose} style={styles.iconButtonSmall}>

@@ -4,6 +4,7 @@ import { router } from 'expo-router';
 
 import { Text, View } from '@/components/Themed';
 import { fetchBooks, uploadBook, deleteBook, getCoverUrl, BookEntry } from '@/lib/api';
+import { loadProgress } from '@/hooks/useSupabaseSync';
 
 interface BookWithProgress extends BookEntry {
   progress: number; // 0-1
@@ -35,15 +36,22 @@ export default function LibraryScreen() {
     try {
       setError(null);
       const data = await fetchBooks();
-      // Attach reading progress from localStorage
-      const withProgress: BookWithProgress[] = data.map((book) => {
-        let progress = 0;
-        try {
-          const stored = localStorage.getItem(`reader-${book.id}-progress`);
-          if (stored) progress = parseFloat(stored) || 0;
-        } catch (e) { console.warn('Failed to read book progress:', e); }
-        return { ...book, progress };
-      });
+      // Attach reading progress (Supabase-synced with localStorage fallback)
+      const withProgress: BookWithProgress[] = await Promise.all(
+        data.map(async (book) => {
+          let progress = 0;
+          try {
+            const synced = await loadProgress(book.id).catch(() => null);
+            if (synced) {
+              progress = synced.progress || 0;
+            } else {
+              const stored = localStorage.getItem(`reader-${book.id}-progress`);
+              if (stored) progress = parseFloat(stored) || 0;
+            }
+          } catch (e) { console.warn('Failed to read book progress:', e); }
+          return { ...book, progress };
+        })
+      );
       setBooks(withProgress);
       // Load last-read book ID
       try {
@@ -134,6 +142,12 @@ export default function LibraryScreen() {
         .delete-btn:hover { opacity: 1 !important; }
         .continue-reading-btn:hover { box-shadow: 0 2px 12px rgba(0,0,0,0.1); }
         .upload-btn:hover { filter: brightness(0.92); }
+        @media (max-width: 768px) {
+          .book-grid { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)) !important; gap: 16px !important; }
+        }
+        @media (max-width: 480px) {
+          .book-grid { grid-template-columns: repeat(3, 1fr) !important; gap: 12px !important; }
+        }
       `}</style>
 
       <div style={webStyles.header}>
@@ -200,7 +214,7 @@ export default function LibraryScreen() {
       )}
 
       {isLoading ? (
-        <div style={{ ...webStyles.emptyState, flexDirection: 'column', gap: '12px' }}>
+        <div role="status" aria-live="polite" style={{ ...webStyles.emptyState, flexDirection: 'column', gap: '12px' }}>
           <div style={{ width: '28px', height: '28px', border: '3px solid #e0e0e0', borderTopColor: '#2f95dc', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
           <span style={{ color: '#999', fontSize: '14px' }}>Loading library...</span>
         </div>
@@ -218,13 +232,14 @@ export default function LibraryScreen() {
           </div>
         </div>
       ) : (
-        <div style={webStyles.grid}>
+        <div className="book-grid" style={webStyles.grid}>
           {books.map((book) => (
             <div key={book.id} className="book-card" style={webStyles.bookCard}>
               <button
                 className="book-cover-btn"
                 onClick={() => router.push(`/reader/${book.id}`)}
                 style={webStyles.coverButton}
+                aria-label={`Open ${book.title} by ${book.author}`}
               >
                 {book.coverFile ? (
                   <img

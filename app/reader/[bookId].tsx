@@ -30,16 +30,15 @@ import BookmarksPanel from '@/components/reader/BookmarksPanel';
 import HighlightsPanel from '@/components/reader/HighlightsPanel';
 import SearchPanel from '@/components/reader/SearchPanel';
 import ThemesPanel from '@/components/reader/ThemesPanel';
-
-function buildThemeCSS(theme: ThemeConfig, size: number): string {
-  return `
-    body { background-color: ${theme.bg} !important; color: ${theme.text} !important; font-size: ${size}% !important; ${theme.fontWeight ? `font-weight: ${theme.fontWeight} !important;` : ''} ${theme.fontFamily ? `font-family: ${theme.fontFamily} !important;` : ''} }
-    p, span, div, li, td, th, h1, h2, h3, h4, h5, h6, a, blockquote { color: ${theme.text} !important; ${theme.fontWeight ? `font-weight: ${theme.fontWeight} !important;` : ''} ${theme.fontFamily ? `font-family: ${theme.fontFamily} !important;` : ''} }
-    img, svg, figure, table { border-radius: 4px; }
-    figure, table, .figure, [class*="figure"] { background-color: ${theme.bg} !important; }
-    td, th { background-color: ${theme.bg} !important; border-color: ${theme.text}33 !important; }
-  `;
-}
+import { injectWordSpans } from '@/lib/epub/word-injector';
+import { applyThemeToIframe } from '@/lib/epub/theme-injector';
+import {
+  cleanupIframeListeners,
+  setupWordClickListener,
+  setupSelectionListener,
+  setupDblClickListener,
+} from '@/lib/epub/iframe-events';
+import { applyHighlightToRange, reapplyHighlights } from '@/lib/epub/highlight-renderer';
 
 export default function ReaderScreen() {
   const { bookId } = useLocalSearchParams<{ bookId: string }>();
@@ -210,224 +209,23 @@ export default function ReaderScreen() {
     return null;
   }
 
-  function injectWordSpans(doc: Document): string[] {
-    const body = doc.body;
-    if (!body) return [];
-
-    let styleEl = doc.getElementById('tts-styles');
-    if (!styleEl) {
-      styleEl = doc.createElement('style');
-      styleEl.id = 'tts-styles';
-      styleEl.textContent = `
-        [data-tts-idx] { cursor: pointer; }
-        [data-tts-idx]:hover { background-color: rgba(0,0,0,0.04); border-radius: 2px; }
-        .tts-active {
-          background-color: #FFEB3B !important;
-          border-radius: 3px;
-          transition: background-color 0.1s;
-        }
-        .user-highlight-yellow { background-color: rgba(255, 235, 59, 0.4) !important; }
-        .user-highlight-blue { background-color: rgba(144, 202, 249, 0.4) !important; }
-        .user-highlight-green { background-color: rgba(165, 214, 167, 0.4) !important; }
-        .user-highlight-pink { background-color: rgba(244, 143, 177, 0.4) !important; }
-      `;
-      doc.head.appendChild(styleEl);
-    }
-
-    const SKIP_TAGS = new Set(['svg', 'math', 'script', 'style']);
-    const walker = doc.createTreeWalker(body, NodeFilter.SHOW_TEXT, {
-      acceptNode(node) {
-        let el = node.parentElement;
-        while (el) {
-          if (SKIP_TAGS.has(el.tagName.toLowerCase())) return NodeFilter.FILTER_REJECT;
-          el = el.parentElement;
-        }
-        return NodeFilter.FILTER_ACCEPT;
-      },
-    });
-    const textNodes: globalThis.Text[] = [];
-    while (walker.nextNode()) {
-      textNodes.push(walker.currentNode as globalThis.Text);
-    }
-
-    // Detect block-level parent for paragraph boundary markers
-    const BLOCK_TAGS = new Set(['p', 'div', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'blockquote', 'section', 'article']);
-    function getBlockParent(node: Node): Element | null {
-      let el = node.parentElement;
-      while (el && el !== body) {
-        if (BLOCK_TAGS.has(el.tagName.toLowerCase())) return el;
-        el = el.parentElement;
-      }
-      return body;
-    }
-
-    let wordIndex = 0;
-    const allWords: string[] = [];
-    let lastBlockParent: Element | null = null;
-
-    for (const textNode of textNodes) {
-      const text = textNode.textContent || '';
-      if (!text.trim()) continue;
-
-      const parent = textNode.parentNode as Element;
-      if (!parent) continue;
-
-      // Insert paragraph break marker when block parent changes
-      const blockParent = getBlockParent(textNode);
-      if (lastBlockParent && blockParent !== lastBlockParent && allWords.length > 0) {
-        allWords.push('\n\n');
-      }
-      lastBlockParent = blockParent;
-
-      const parts = text.split(/(\s+)/);
-      const fragment = doc.createDocumentFragment();
-      for (const part of parts) {
-        if (/^\s+$/.test(part) || part === '') {
-          fragment.appendChild(doc.createTextNode(part));
-        } else {
-          const span = doc.createElement('span');
-          span.setAttribute('data-tts-idx', String(wordIndex));
-          span.textContent = part;
-          fragment.appendChild(span);
-          allWords.push(part);
-          wordIndex++;
-        }
-      }
-      parent.replaceChild(fragment, textNode);
-    }
-
-    return allWords;
-  }
-
-  function cleanupIframeListeners() {
-    for (const entry of iframeListenersRef.current) {
-      try { entry.doc.removeEventListener(entry.type, entry.handler); } catch (e) { console.warn('Failed to remove iframe listener:', e); }
-    }
-    iframeListenersRef.current = [];
-  }
-
-  function addIframeListener(doc: Document, type: string, handler: EventListener) {
-    doc.addEventListener(type, handler);
-    iframeListenersRef.current.push({ doc, type, handler });
-  }
-
-  function setupWordClickListener(doc: Document) {
-    const handler = (e: MouseEvent) => {
-      const target = e.target as HTMLElement;
-      const ttsIdx = target.getAttribute?.('data-tts-idx');
-      if (ttsIdx === null || ttsIdx === undefined) return;
-
-      const selection = doc.getSelection();
-      if (selection && !selection.isCollapsed && selection.toString().trim().length > 1) {
-        return;
-      }
-
-      const wordIndex = parseInt(ttsIdx, 10);
-      if (isNaN(wordIndex)) return;
-
-      stopSpeaking();
-      tts.resumeWordIndexRef.current = wordIndex;
-      tts.setCurrentWordIndex(wordIndex);
-      tts.startTTSFromWordRef.current(wordIndex, tts.ttsSpeedRef.current);
-    };
-    addIframeListener(doc, 'click', handler as EventListener);
-  }
-
-  function setupSelectionListener(doc: Document) {
-    const handler = () => {
-      setTimeout(() => {
-        const selection = doc.getSelection();
-        if (!selection || selection.isCollapsed || !selection.toString().trim()) {
-          return;
-        }
-
-        const text = selection.toString().trim();
-        if (text.length < 2) return;
-
-        const range = selection.getRangeAt(0);
-        const rect = range.getBoundingClientRect();
-
-        const iframe = viewerRef.current?.querySelector('iframe');
-        const iframeRect = iframe?.getBoundingClientRect() || { left: 0, top: 0 };
-
-        const popupWidth = 280;
-        const popupHeight = 220;
-        const rawX = iframeRect.left + rect.left + rect.width / 2;
-        const rawY = iframeRect.top + rect.bottom + 8;
-        const clampedX = Math.max(popupWidth / 2 + 8, Math.min(window.innerWidth - popupWidth / 2 - 8, rawX));
-        const clampedY = Math.max(8, Math.min(window.innerHeight - popupHeight - 8, rawY));
-
-        hlState.setSelectionPopup({
-          x: clampedX,
-          y: clampedY,
-          selectedText: text,
-          range: range.cloneRange(),
-        });
-        hlState.setPopupPos(null);
-        hlState.setNoteText('');
-        hlState.setSelectedColor('yellow');
-      }, 10);
-    };
-    addIframeListener(doc, 'mouseup', handler);
-  }
-
-  function setupDblClickListener(doc: Document) {
-    const handler = (e: MouseEvent) => {
-      const selection = doc.getSelection();
-      if (!selection || selection.isCollapsed) return;
-      const word = selection.toString().trim();
-      if (!word || word.includes(' ') || word.length > 30) return;
-
-      const range = selection.getRangeAt(0);
-      const rect = range.getBoundingClientRect();
-      const iframe = viewerRef.current?.querySelector('iframe');
-      const iframeRect = iframe?.getBoundingClientRect() || { left: 0, top: 0 };
-
-      const popupWidth = 280;
-      const rawX = iframeRect.left + rect.left + rect.width / 2;
-      const rawY = iframeRect.top + rect.bottom + 8;
-      const clampedX = Math.max(popupWidth / 2 + 8, Math.min(window.innerWidth - popupWidth / 2 - 8, rawX));
-      const clampedY = Math.max(8, Math.min(window.innerHeight - 300, rawY));
-
-      hlState.setSelectionPopup({ x: clampedX, y: clampedY, selectedText: word, range: range.cloneRange() });
-      hlState.setPopupPos(null);
-      hlState.setNoteText('');
-      hlState.setSelectedColor('yellow');
-      hlState.handleDefine(word);
-      e.preventDefault();
-      e.stopPropagation();
-    };
-    addIframeListener(doc, 'dblclick', handler as EventListener);
-  }
-
-  function applyHighlightToRange(range: Range, color: HighlightColor) {
-    const iframeDoc = getIframeDocument();
-    if (!iframeDoc || !range) return;
-
-    try {
-      const span = iframeDoc.createElement('span');
-      span.className = `user-highlight-${color}`;
-      range.surroundContents(span);
-    } catch (e) {
-      const container = range.commonAncestorContainer;
-      const parent = container.nodeType === 3 ? container.parentElement : container as Element;
-      if (parent && iframeDoc) {
-        const wordSpans = parent.querySelectorAll('[data-tts-idx]');
-        wordSpans.forEach((span) => {
-          try {
-            const spanRange = iframeDoc.createRange();
-            spanRange.selectNodeContents(span);
-            const intersects =
-              range.compareBoundaryPoints(Range.START_TO_END, spanRange) > 0 &&
-              range.compareBoundaryPoints(Range.END_TO_START, spanRange) < 0;
-            if (intersects) {
-              (span as HTMLElement).classList.add(`user-highlight-${color}`);
-            }
-          } catch (e) { console.warn('Failed to apply highlight to span:', e); }
-        });
-      }
-    }
-  }
+  // Iframe event deps — passed to extracted iframe-events module
+  const iframeEventDeps = {
+    tts: {
+      resumeWordIndexRef: tts.resumeWordIndexRef,
+      setCurrentWordIndex: tts.setCurrentWordIndex,
+      startTTSFromWordRef: tts.startTTSFromWordRef,
+      ttsSpeedRef: tts.ttsSpeedRef,
+    },
+    hlState: {
+      setSelectionPopup: hlState.setSelectionPopup,
+      setPopupPos: hlState.setPopupPos,
+      setNoteText: hlState.setNoteText,
+      setSelectedColor: hlState.setSelectedColor,
+      handleDefine: hlState.handleDefine,
+    },
+    viewerRef,
+  };
 
   function saveHighlight() {
     if (!hlState.selectionPopup) return;
@@ -448,30 +246,17 @@ export default function ReaderScreen() {
     hlState.setNoteText('');
   }
 
-  function applyThemeToIframe(themeName: ThemeName, size: number) {
-    const iframeDoc = getIframeDocument();
-    if (!iframeDoc) return;
-    const theme = themes[themeName];
-    let styleEl = iframeDoc.getElementById('reader-theme');
-    if (!styleEl) {
-      styleEl = iframeDoc.createElement('style');
-      styleEl.id = 'reader-theme';
-      iframeDoc.head.appendChild(styleEl);
-    }
-    styleEl.textContent = buildThemeCSS(theme, size);
-  }
-
   function setTheme(themeName: ThemeName) {
     setActiveTheme(themeName);
     activeThemeRef.current = themeName;
-    applyThemeToIframe(themeName, fontSize);
+    applyThemeToIframe(getIframeDocument(), themeName, fontSize);
   }
 
   function changeFontSize(delta: number) {
     const newSize = Math.max(50, Math.min(200, fontSize + delta));
     setFontSize(newSize);
     fontSizeRef.current = newSize;
-    applyThemeToIframe(activeTheme, newSize);
+    applyThemeToIframe(getIframeDocument(), activeTheme, newSize);
   }
 
   function navigateToBookmark(cfi: string) {
@@ -612,15 +397,7 @@ export default function ReaderScreen() {
             prevHighlightRef.current = null;
 
             // Apply current theme to new page content
-            const t = themes[activeThemeRef.current];
-            const sz = fontSizeRef.current;
-            let themeStyle = doc.getElementById('reader-theme');
-            if (!themeStyle) {
-              themeStyle = doc.createElement('style');
-              themeStyle.id = 'reader-theme';
-              doc.head.appendChild(themeStyle);
-            }
-            themeStyle.textContent = buildThemeCSS(t, sz);
+            applyThemeToIframe(doc, activeThemeRef.current, fontSizeRef.current);
 
             // Listen for text selection and word clicks in the iframe
             setupSelectionListener(doc);
@@ -788,6 +565,14 @@ export default function ReaderScreen() {
           .reader-ttsbar button:hover { opacity: 0.8; }
           button:disabled { cursor: not-allowed !important; }
           .reader-highlight-color:hover { transform: scale(1.15); }
+          *:focus-visible { outline: 2px solid #2f95dc; outline-offset: 2px; }
+          @media (max-width: 640px) {
+            .reader-topbar { padding: 4px 8px !important; }
+            .reader-topbar .reader-book-title { display: none; }
+            .reader-ttsbar { flex-wrap: wrap !important; gap: 6px !important; }
+            .reader-ttsbar select { max-width: 140px !important; }
+            .reader-panel-dropdown { position: fixed !important; top: 50px !important; left: 0 !important; right: 0 !important; width: 100% !important; max-width: 100% !important; border-radius: 0 !important; }
+          }
         `}</style>
 
         {/* Top bar — auto-hides */}
@@ -800,7 +585,7 @@ export default function ReaderScreen() {
           pointerEvents: barsVisible ? 'auto' as const : 'none' as const,
         }}>
           <div style={webStyles.topBarLeft}>
-            <button onClick={() => router.back()} className="reader-icon-btn" style={webStyles.iconButton} title="Back" aria-label="Back">
+            <button onClick={() => router.back()} className="reader-icon-btn" style={webStyles.iconButton} title="Back" aria-label="Go back to library">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <polyline points="15 18 9 12 15 6" />
               </svg>
@@ -813,7 +598,8 @@ export default function ReaderScreen() {
                 color: showToc ? '#2f95dc' : '#555',
               }}
               title="Table of Contents"
-              aria-label="Table of Contents"
+              aria-label="Table of contents"
+              aria-expanded={showToc}
             >
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
                 <line x1="4" y1="6" x2="20" y2="6" />
@@ -829,7 +615,8 @@ export default function ReaderScreen() {
                 color: hlState.showHighlights ? '#2f95dc' : '#555',
               }}
               title={`Highlights & Notes (${hlState.highlights.length})`}
-              aria-label="Highlights and Notes"
+              aria-label="Highlights and notes"
+              aria-expanded={hlState.showHighlights}
             >
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
                 <rect x="3" y="3" width="18" height="18" rx="2" />
@@ -840,7 +627,7 @@ export default function ReaderScreen() {
             </button>
           </div>
 
-          <span style={{ ...webStyles.bookTitle, color: themes[activeTheme].text }}>{bookTitle || 'Loading...'}</span>
+          <span className="reader-book-title" style={{ ...webStyles.bookTitle, color: themes[activeTheme].text }}>{bookTitle || 'Loading...'}</span>
 
           <div style={webStyles.topBarRight}>
             {/* Search */}
@@ -851,7 +638,8 @@ export default function ReaderScreen() {
                 color: showSearch ? '#2f95dc' : '#555',
               }}
               title="Search (Cmd+F)"
-              aria-label="Search"
+              aria-label="Search in book"
+              aria-expanded={showSearch}
             >
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <circle cx="11" cy="11" r="8" />
@@ -868,7 +656,8 @@ export default function ReaderScreen() {
                 fontWeight: 600,
               }}
               title="Themes & Settings"
-              aria-label="Themes"
+              aria-label="Themes and font settings"
+              aria-expanded={showThemes}
             >
               Aa
             </button>
@@ -881,6 +670,7 @@ export default function ReaderScreen() {
               }}
               title={`Bookmarks (${bmState.bookmarks.length})`}
               aria-label="Bookmarks"
+              aria-expanded={bmState.showBookmarks}
             >
               <svg width="20" height="20" viewBox="0 0 24 24" fill={bmState.bookmarks.some((b) => b.page === currentPage) ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" strokeLinejoin="round">
                 <path d="M6 4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18l-6-4-6 4V4z" />
@@ -924,6 +714,9 @@ export default function ReaderScreen() {
           <div
             style={webStyles.shortcutsOverlay}
             onClick={() => setShowShortcuts(false)}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Keyboard shortcuts"
           >
             <div style={{ ...webStyles.shortcutsPanel, ...panelTheme }} onClick={(e) => e.stopPropagation()}>
               <div style={webStyles.tocHeader}>
@@ -1202,7 +995,7 @@ export default function ReaderScreen() {
 
         {/* Toast notification */}
         {toast && (
-          <div style={{ position: 'fixed', bottom: '80px', left: '50%', transform: 'translateX(-50%)', backgroundColor: 'rgba(0,0,0,0.75)', color: '#fff', padding: '8px 20px', borderRadius: '20px', fontSize: '13px', fontWeight: 500, zIndex: 200, pointerEvents: 'none', animation: 'fadeInOut 2s ease' }}>{toast}</div>
+          <div role="status" aria-live="polite" style={{ position: 'fixed', bottom: '80px', left: '50%', transform: 'translateX(-50%)', backgroundColor: 'rgba(0,0,0,0.75)', color: '#fff', padding: '8px 20px', borderRadius: '20px', fontSize: '13px', fontWeight: 500, zIndex: 200, pointerEvents: 'none', animation: 'fadeInOut 2s ease' }}>{toast}</div>
         )}
 
         {/* Page navigation bar — auto-hides */}

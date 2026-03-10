@@ -6,6 +6,7 @@
 
 import React from 'react';
 import type { ReaderBookmark } from '@/hooks/reader-types';
+import { PANEL_STYLES } from '@/lib/styles';
 
 export interface BookmarksPanelBmState {
   bookmarks: ReaderBookmark[];
@@ -44,14 +45,14 @@ export default function BookmarksPanel({
   const isCurrentPageBookmarked = bmState.bookmarks.some((b) => b.page === currentPage);
 
   return (
-    <div style={{ ...styles.bookmarksDropdown, ...panelTheme }}>
-      <div style={styles.dropdownHeader}>
+    <div className="reader-panel-dropdown" style={{ ...styles.bookmarksDropdown, ...panelTheme }}>
+      <div style={PANEL_STYLES.dropdownHeader}>
         <strong>Bookmarks</strong>
         <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
           <button
             onClick={bmState.toggleBookmark}
             style={{
-              ...styles.iconButtonSmall,
+              ...PANEL_STYLES.iconButtonSmall,
               color: isCurrentPageBookmarked ? '#2f95dc' : undefined,
             }}
             title={isCurrentPageBookmarked ? 'Remove bookmark' : 'Bookmark this page'}
@@ -62,14 +63,14 @@ export default function BookmarksPanel({
           </button>
           <button
             onClick={() => bmState.setShowBookmarks(false)}
-            style={styles.iconButtonSmall}
+            style={PANEL_STYLES.iconButtonSmall}
           >
             {'\u2715'}
           </button>
         </div>
       </div>
       {bmState.bookmarks.length === 0 ? (
-        <div style={styles.bookmarksEmpty}>
+        <div style={PANEL_STYLES.emptyState}>
           <div style={{ fontWeight: 500, marginBottom: '4px' }}>No Bookmarks</div>
           <div style={{ fontSize: '12px', opacity: 0.6 }}>
             {variant === 'pdf'
@@ -117,7 +118,7 @@ export default function BookmarksPanel({
                 <div style={{ display: 'flex', alignItems: 'center', gap: '2px', paddingRight: '4px' }}>
                   <button
                     onClick={() => { bmState.setEditingBookmarkId(b.id); bmState.setBookmarkTitleInput(b.label); }}
-                    style={styles.iconButtonSmall}
+                    style={PANEL_STYLES.iconButtonSmall}
                     title="Rename"
                   >
                     {variant === 'epub' ? (
@@ -132,7 +133,7 @@ export default function BookmarksPanel({
                   </button>
                   <button
                     onClick={() => bmState.removeBookmark(b.id)}
-                    style={styles.iconButtonSmall}
+                    style={PANEL_STYLES.iconButtonSmall}
                     title="Remove bookmark"
                   >
                     {'\u2715'}
@@ -148,33 +149,12 @@ export default function BookmarksPanel({
 
 const styles: Record<string, React.CSSProperties> = {
   bookmarksDropdown: {
+    ...PANEL_STYLES.dropdown,
     position: 'absolute',
     top: '44px',
     right: '12px',
     width: '260px',
     maxHeight: '400px',
-    backgroundColor: '#fafafa',
-    border: '1px solid #e8e8e8',
-    borderRadius: '8px',
-    boxShadow: '0 4px 16px rgba(0,0,0,0.12)',
-    zIndex: 50,
-    display: 'flex',
-    flexDirection: 'column',
-    overflow: 'hidden',
-  },
-  dropdownHeader: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: '12px 16px',
-    borderBottom: '1px solid #eee',
-    fontSize: '14px',
-  },
-  bookmarksEmpty: {
-    padding: '30px 20px',
-    textAlign: 'center',
-    color: '#999',
-    fontSize: '13px',
   },
   bookmarksList: {
     overflow: 'auto',
@@ -214,13 +194,5 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: '4px',
     outline: 'none',
     boxSizing: 'border-box' as const,
-  },
-  iconButtonSmall: {
-    background: 'none',
-    border: 'none',
-    fontSize: '14px',
-    cursor: 'pointer',
-    padding: '4px 8px',
-    color: '#999',
   },
 };

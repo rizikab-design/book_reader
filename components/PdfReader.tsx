@@ -16,6 +16,8 @@ import { stopSpeaking } from '@/lib/tts-engine';
 import type { PDFTextItem } from '@/types/pdfjs';
 import { HighlightColor, HIGHLIGHT_COLORS, ThemeName, themes, ReaderHighlight } from '@/hooks/reader-types';
 import { usePersistedState, bookKey } from '@/hooks/usePersistedState';
+import { renderThumbnail as renderThumbnailFn, createThumbnailObserver } from '@/lib/pdf/thumbnail-manager';
+import { applyHighlightsToTextLayer as applyHighlightsToTextLayerFn } from '@/lib/pdf/text-layer';
 import { useToast } from '@/hooks/useToast';
 import { useAutoHideBars } from '@/hooks/useAutoHideBars';
 import { useReaderTheme } from '@/hooks/useReaderTheme';
@@ -199,8 +201,12 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
       let startPage = 1;
       try {
         const synced = await loadProgress(bookId).catch(() => null);
-        const savedStr = synced?.page != null ? String(synced.page) : localStorage.getItem(bookKey(bookId, 'page'));
-        if (savedStr) startPage = parseInt(savedStr, 10);
+        if (synced?.page) {
+          startPage = synced.page;
+        } else {
+          const saved = localStorage.getItem(bookKey(bookId, 'page'));
+          if (saved) startPage = parseInt(saved, 10);
+        }
       } catch (e) { console.warn('Failed to read saved page:', e); }
       if (startPage > pdf.numPages || startPage < 1) startPage = 1;
 
@@ -212,82 +218,27 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
     }
   }
 
-  // ── Thumbnail rendering ──────────────────────────────────────────────
+  // ── Thumbnail rendering (delegated to lib/pdf/thumbnail-manager) ────
   async function renderThumbnail(pageNum: number): Promise<string> {
-    if (thumbnailCacheRef.current.has(pageNum)) return thumbnailCacheRef.current.get(pageNum)!;
-    const pdf = pdfDocRef.current;
-    if (!pdf) return '';
-    try {
-      const page = await pdf.getPage(pageNum);
-      const viewport = page.getViewport({ scale: THUMBNAIL_SCALE });
-      const canvas = document.createElement('canvas');
-      canvas.width = viewport.width;
-      canvas.height = viewport.height;
-      const ctx = canvas.getContext('2d')!;
-      await page.render({ canvasContext: ctx, viewport }).promise;
-      const url = canvas.toDataURL('image/jpeg', 0.6);
-      if (thumbnailCacheRef.current.size >= THUMBNAIL_CACHE_LIMIT) {
-        const firstKey = thumbnailCacheRef.current.keys().next().value;
-        if (firstKey !== undefined) thumbnailCacheRef.current.delete(firstKey);
-      }
-      thumbnailCacheRef.current.set(pageNum, url);
-      return url;
-    } catch (e) { console.warn('PDF thumbnail render error:', e); return ''; }
+    return renderThumbnailFn(pdfDocRef.current, pageNum, thumbnailCacheRef.current, THUMBNAIL_SCALE, THUMBNAIL_CACHE_LIMIT);
   }
 
-  // ── Apply saved highlights to text layer ─────────────────────────────
+  // ── Apply saved highlights to text layer (delegated to lib/pdf/text-layer) ──
   function applyHighlightsToTextLayer(pageNum: number, textLayer: HTMLDivElement | null) {
-    if (!textLayer) return;
-    const pageHighlights = hlState.highlights.filter((h) => h.page === pageNum);
-    if (pageHighlights.length === 0) return;
-
-    const spans = textLayer.querySelectorAll('span');
-    if (spans.length === 0) return;
-
-    for (const h of pageHighlights) {
-      const hLower = h.selectedText.toLowerCase();
-      let accumulated = '';
-      let spanTexts: { span: HTMLSpanElement; start: number; text: string }[] = [];
-      spans.forEach((span) => {
-        const text = span.textContent || '';
-        spanTexts.push({ span: span as HTMLSpanElement, start: accumulated.length, text });
-        accumulated += text;
-      });
-
-      const accLower = accumulated.toLowerCase();
-      let searchFrom = 0;
-      while (true) {
-        const idx = accLower.indexOf(hLower, searchFrom);
-        if (idx === -1) break;
-        const endIdx = idx + hLower.length;
-        for (const st of spanTexts) {
-          const spanEnd = st.start + st.text.length;
-          if (st.start < endIdx && spanEnd > idx) {
-            st.span.classList.add(`pdf-highlight-${h.color}`);
-          }
-        }
-        searchFrom = idx + 1;
-      }
-    }
+    applyHighlightsToTextLayerFn(pageNum, textLayer, hlState.highlights);
   }
 
   // Lazy-load thumbnails via IntersectionObserver when they scroll into view
   useEffect(() => {
     if (!showThumbnails || !pdfDocRef.current || !thumbnailsContainerRef.current) return;
     const container = thumbnailsContainerRef.current;
-    const generating = new Set<number>();
 
-    const observer = new IntersectionObserver((entries) => {
-      for (const entry of entries) {
-        if (!entry.isIntersecting) continue;
-        const pageNum = Number((entry.target as HTMLElement).dataset.page);
-        if (!pageNum || thumbnailCacheRef.current.has(pageNum) || generating.has(pageNum)) continue;
-        generating.add(pageNum);
-        renderThumbnail(pageNum).then(() => {
-          setThumbsLoaded((prev) => new Set(prev).add(pageNum));
-        });
-      }
-    }, { root: container, rootMargin: '200px' });
+    const observer = createThumbnailObserver({
+      container,
+      cache: thumbnailCacheRef.current,
+      renderFn: renderThumbnail,
+      onLoaded: (pageNum) => setThumbsLoaded((prev) => new Set(prev).add(pageNum)),
+    });
 
     const slots = container.querySelectorAll('[data-page]');
     slots.forEach((slot) => observer.observe(slot));
@@ -572,6 +523,14 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
         .pdf-pagechevron:hover { opacity: 0.7 !important; }
         .pdf-ttsbar button:hover { opacity: 0.8; }
         button:disabled { cursor: not-allowed !important; }
+        *:focus-visible { outline: 2px solid #2f95dc; outline-offset: 2px; }
+        @media (max-width: 640px) {
+          .pdf-topbar { padding: 4px 8px !important; }
+          .pdf-topbar .pdf-book-title { display: none; }
+          .pdf-ttsbar { flex-wrap: wrap !important; gap: 6px !important; }
+          .pdf-ttsbar select { max-width: 140px !important; }
+          .reader-panel-dropdown { position: fixed !important; top: 50px !important; left: 0 !important; right: 0 !important; width: 100% !important; max-width: 100% !important; border-radius: 0 !important; }
+        }
       `}</style>
       {/* Progress bar */}
       <div style={s.progressTrack}>
@@ -609,7 +568,7 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
           </button>
         </div>
 
-        <span style={{ ...s.bookTitleText, color: themeColors.text }}>{bookTitle}</span>
+        <span className="pdf-book-title" style={{ ...s.bookTitleText, color: themeColors.text }}>{bookTitle}</span>
 
         <div style={s.topBarRight}>
           {/* Search */}

@@ -45,7 +45,7 @@ export default function HighlightsPanel({
   variant = 'epub',
 }: HighlightsPanelProps) {
   return (
-    <div style={{ ...styles.highlightsDropdown, ...panelTheme }}>
+    <div className="reader-panel-dropdown" style={{ ...styles.highlightsDropdown, ...panelTheme }}>
       <div style={styles.dropdownHeader}>
         <strong>Highlights & Notes</strong>
         <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>

@@ -7,6 +7,7 @@
  */
 
 import React from 'react';
+import { PANEL_STYLES } from '@/lib/styles';
 
 /** ePub TOC item shape */
 export interface EpubTocItem {
@@ -49,10 +50,10 @@ export default function TocPanel({
   const isSidebar = variant === 'sidebar';
 
   return (
-    <div style={{ ...(isSidebar ? styles.tocPanelSidebar : styles.tocPanelDropdown), ...panelTheme }}>
-      <div style={styles.tocHeader}>
+    <div className="reader-panel-dropdown" style={{ ...(isSidebar ? styles.tocPanelSidebar : styles.tocPanelDropdown), ...panelTheme }}>
+      <div style={PANEL_STYLES.dropdownHeader}>
         <strong>Contents</strong>
-        <button onClick={onClose} style={styles.iconButtonSmall}>
+        <button onClick={onClose} style={PANEL_STYLES.iconButtonSmall}>
           {'\u2715'}
         </button>
       </div>
@@ -107,27 +108,12 @@ const styles: Record<string, React.CSSProperties> = {
     flexShrink: 0,
   },
   tocPanelDropdown: {
+    ...PANEL_STYLES.dropdown,
     position: 'absolute',
     top: '50px',
     left: '12px',
     width: '280px',
     maxHeight: '450px',
-    backgroundColor: '#fafafa',
-    border: '1px solid #e8e8e8',
-    borderRadius: '8px',
-    boxShadow: '0 4px 16px rgba(0,0,0,0.12)',
-    zIndex: 50,
-    display: 'flex',
-    flexDirection: 'column',
-    overflow: 'hidden',
-  },
-  tocHeader: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: '12px 16px',
-    borderBottom: '1px solid #eee',
-    fontSize: '14px',
   },
   tocListSidebar: {
     flex: 1,
@@ -163,13 +149,5 @@ const styles: Record<string, React.CSSProperties> = {
     cursor: 'pointer',
     textAlign: 'left',
     lineHeight: '1.4',
-  },
-  iconButtonSmall: {
-    background: 'none',
-    border: 'none',
-    fontSize: '14px',
-    cursor: 'pointer',
-    padding: '4px 8px',
-    color: '#999',
   },
 };

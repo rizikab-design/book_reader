@@ -85,7 +85,11 @@ app.use(cors({
     }
   },
 }));
-app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
+app.use(helmet({
+  contentSecurityPolicy: false,
+  crossOriginEmbedderPolicy: false,
+  crossOriginResourcePolicy: { policy: 'cross-origin' },
+}));
 app.use(express.json());
 app.use('/books', express.static(BOOKS_DIR, { dotfiles: 'deny' }));
 app.use('/covers', express.static(COVERS_DIR, { dotfiles: 'deny' }));
