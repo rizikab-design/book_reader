@@ -23,7 +23,7 @@ import { useReaderSearch } from '@/hooks/useReaderSearch';
 import { useReaderTts } from '@/hooks/useReaderTts';
 import { useReaderHighlights } from '@/hooks/useReaderHighlights';
 import { useReaderBookmarks } from '@/hooks/useReaderBookmarks';
-import { saveProgress } from '@/hooks/useSupabaseSync';
+import { saveProgress, loadProgress } from '@/hooks/useSupabaseSync';
 
 import TocPanel from '@/components/reader/TocPanel';
 import BookmarksPanel from '@/components/reader/BookmarksPanel';
@@ -674,7 +674,8 @@ export default function ReaderScreen() {
       });
 
       // Restore saved reading position, or start from beginning
-      const savedPosition = localStorage.getItem(`reader-${bookId}-position`);
+      const synced = await loadProgress(bookId).catch(() => null);
+      const savedPosition = synced?.cfi || localStorage.getItem(`reader-${bookId}-position`);
       await rendition.display(savedPosition || undefined);
 
       // Extract table of contents
@@ -799,7 +800,7 @@ export default function ReaderScreen() {
           pointerEvents: barsVisible ? 'auto' as const : 'none' as const,
         }}>
           <div style={webStyles.topBarLeft}>
-            <button onClick={() => router.back()} className="reader-icon-btn" style={webStyles.iconButton} title="Back">
+            <button onClick={() => router.back()} className="reader-icon-btn" style={webStyles.iconButton} title="Back" aria-label="Back">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <polyline points="15 18 9 12 15 6" />
               </svg>
@@ -812,6 +813,7 @@ export default function ReaderScreen() {
                 color: showToc ? '#2f95dc' : '#555',
               }}
               title="Table of Contents"
+              aria-label="Table of Contents"
             >
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
                 <line x1="4" y1="6" x2="20" y2="6" />
@@ -827,6 +829,7 @@ export default function ReaderScreen() {
                 color: hlState.showHighlights ? '#2f95dc' : '#555',
               }}
               title={`Highlights & Notes (${hlState.highlights.length})`}
+              aria-label="Highlights and Notes"
             >
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
                 <rect x="3" y="3" width="18" height="18" rx="2" />
@@ -848,6 +851,7 @@ export default function ReaderScreen() {
                 color: showSearch ? '#2f95dc' : '#555',
               }}
               title="Search (Cmd+F)"
+              aria-label="Search"
             >
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <circle cx="11" cy="11" r="8" />
@@ -864,6 +868,7 @@ export default function ReaderScreen() {
                 fontWeight: 600,
               }}
               title="Themes & Settings"
+              aria-label="Themes"
             >
               Aa
             </button>
@@ -875,6 +880,7 @@ export default function ReaderScreen() {
                 color: bmState.showBookmarks ? '#2f95dc' : (bmState.bookmarks.some((b) => b.page === currentPage) ? '#2f95dc' : '#555'),
               }}
               title={`Bookmarks (${bmState.bookmarks.length})`}
+              aria-label="Bookmarks"
             >
               <svg width="20" height="20" viewBox="0 0 24 24" fill={bmState.bookmarks.some((b) => b.page === currentPage) ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" strokeLinejoin="round">
                 <path d="M6 4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18l-6-4-6 4V4z" />
@@ -1331,17 +1337,6 @@ export default function ReaderScreen() {
           </div>
         )}
       </div>
-    );
-  }
-
-  function highlightSearchMatch(text: string, query: string): React.ReactNode {
-    if (!query) return text;
-    const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const parts = text.split(new RegExp(`(${escaped})`, 'gi'));
-    return parts.map((part, i) =>
-      part.toLowerCase() === query.toLowerCase()
-        ? <mark key={i} style={{ background: '#FFEB3B', padding: '0 1px', borderRadius: '2px' }}>{part}</mark>
-        : part
     );
   }
 

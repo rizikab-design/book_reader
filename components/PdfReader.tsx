@@ -23,6 +23,7 @@ import { useReaderSearch, SearchResult } from '@/hooks/useReaderSearch';
 import { useReaderTts } from '@/hooks/useReaderTts';
 import { useReaderHighlights } from '@/hooks/useReaderHighlights';
 import { useReaderBookmarks } from '@/hooks/useReaderBookmarks';
+import { loadProgress } from '@/hooks/useSupabaseSync';
 
 import TocPanel from '@/components/reader/TocPanel';
 import BookmarksPanel from '@/components/reader/BookmarksPanel';
@@ -194,9 +195,13 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
         }
       } catch (e) { console.warn('Failed to extract PDF outline/TOC:', e); }
 
-      // Restore saved page
+      // Restore saved page (prefer Supabase sync, fall back to localStorage)
       let startPage = 1;
-      try { const saved = localStorage.getItem(bookKey(bookId, 'page')); if (saved) startPage = parseInt(saved, 10); } catch (e) { console.warn('Failed to read saved page from localStorage:', e); }
+      try {
+        const synced = await loadProgress(bookId).catch(() => null);
+        const savedStr = synced?.page != null ? String(synced.page) : localStorage.getItem(bookKey(bookId, 'page'));
+        if (savedStr) startPage = parseInt(savedStr, 10);
+      } catch (e) { console.warn('Failed to read saved page:', e); }
       if (startPage > pdf.numPages || startPage < 1) startPage = 1;
 
       setCurrentPage(startPage);

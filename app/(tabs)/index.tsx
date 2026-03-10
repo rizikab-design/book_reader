@@ -157,7 +157,7 @@ export default function LibraryScreen() {
       </div>
 
       {error && (
-        <div style={webStyles.errorBanner}>
+        <div role="alert" style={webStyles.errorBanner}>
           {error}
           <button onClick={() => setError(null)} style={webStyles.errorClose}>{'\u2715'}</button>
         </div>

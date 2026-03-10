@@ -10,6 +10,7 @@ const { MsEdgeTTS, OUTPUT_FORMAT } = require('msedge-tts');
 const rateLimit = require('express-rate-limit');
 const Database = require('better-sqlite3');
 const crypto = require('crypto');
+const helmet = require('helmet');
 
 const app = express();
 const PORT = parseInt(process.env.PORT, 10) || 3001;
@@ -84,6 +85,7 @@ app.use(cors({
     }
   },
 }));
+app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
 app.use(express.json());
 app.use('/books', express.static(BOOKS_DIR, { dotfiles: 'deny' }));
 app.use('/covers', express.static(COVERS_DIR, { dotfiles: 'deny' }));

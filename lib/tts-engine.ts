@@ -8,7 +8,6 @@
  * Word tracking uses timer-based estimation in both modes.
  */
 
-import { WordTiming } from '@/types';
 import { API_BASE } from '@/lib/config';
 
 export const SPEED_OPTIONS = [0.75, 1, 1.25, 1.5, 2];
@@ -501,13 +500,3 @@ export function isPaused(): boolean {
   return window.speechSynthesis.paused;
 }
 
-export function generateWordTimings(text: string, wordsPerMinute: number = 180): WordTiming[] {
-  const words = text.split(/\s+/).filter((w) => w.length > 0);
-  const msPerWord = 60000 / wordsPerMinute;
-
-  return words.map((word, index) => ({
-    word,
-    start_ms: Math.round(index * msPerWord),
-    end_ms: Math.round((index + 1) * msPerWord),
-  }));
-}
