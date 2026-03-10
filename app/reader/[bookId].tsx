@@ -29,6 +29,9 @@ import BookmarksPanel from '@/components/reader/BookmarksPanel';
 import HighlightsPanel from '@/components/reader/HighlightsPanel';
 import SearchPanel from '@/components/reader/SearchPanel';
 import ThemesPanel from '@/components/reader/ThemesPanel';
+import ReaderToolbar from '@/components/reader/ReaderToolbar';
+import TtsBar from '@/components/reader/TtsBar';
+import PageBar from '@/components/reader/PageBar';
 import { injectWordSpans } from '@/lib/epub/word-injector';
 import { applyThemeToIframe } from '@/lib/epub/theme-injector';
 import {
@@ -544,108 +547,26 @@ export default function ReaderScreen() {
         `}</style>
 
         {/* Top bar — auto-hides */}
-        <div className="reader-topbar" style={{
-          ...webStyles.topBar,
-          backgroundColor: themes[activeTheme].bg,
-          borderBottomColor: activeTheme === 'quiet' ? '#555' : '#e8e8e8',
-          opacity: barsVisible ? 1 : 0,
-          transition: 'opacity 0.3s',
-          pointerEvents: barsVisible ? 'auto' as const : 'none' as const,
-        }}>
-          <div style={webStyles.topBarLeft}>
-            <button onClick={() => router.back()} className="reader-icon-btn" style={webStyles.iconButton} title="Back" aria-label="Go back to library">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <polyline points="15 18 9 12 15 6" />
-              </svg>
-            </button>
-            {/* TOC — list icon */}
-            <button
-              onClick={() => { setShowToc(!showToc); if (!showToc) { hlState.setShowHighlights(false); bmState.setShowBookmarks(false); } }}
-              style={{
-                ...webStyles.iconButton,
-                color: showToc ? '#2f95dc' : '#555',
-              }}
-              title="Table of Contents"
-              aria-label="Table of contents"
-              aria-expanded={showToc}
-            >
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                <line x1="4" y1="6" x2="20" y2="6" />
-                <line x1="4" y1="12" x2="20" y2="12" />
-                <line x1="4" y1="18" x2="20" y2="18" />
-              </svg>
-            </button>
-            {/* Highlights & Notes — notes icon */}
-            <button
-              onClick={() => { hlState.setShowHighlights(!hlState.showHighlights); if (!hlState.showHighlights) { setShowToc(false); bmState.setShowBookmarks(false); } }}
-              style={{
-                ...webStyles.iconButton,
-                color: hlState.showHighlights ? '#2f95dc' : '#555',
-              }}
-              title={`Highlights & Notes (${hlState.highlights.length})`}
-              aria-label="Highlights and notes"
-              aria-expanded={hlState.showHighlights}
-            >
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                <rect x="3" y="3" width="18" height="18" rx="2" />
-                <line x1="7" y1="8" x2="17" y2="8" />
-                <line x1="7" y1="12" x2="17" y2="12" />
-                <line x1="7" y1="16" x2="13" y2="16" />
-              </svg>
-            </button>
-          </div>
-
-          <span className="reader-book-title" style={{ ...webStyles.bookTitle, color: themes[activeTheme].text }}>{bookTitle || 'Loading...'}</span>
-
-          <div style={webStyles.topBarRight}>
-            {/* Search */}
-            <button
-              onClick={() => { setShowSearch(!showSearch); if (!showSearch) setTimeout(() => searchInputRef.current?.focus(), 50); }}
-              style={{
-                ...webStyles.iconButton,
-                color: showSearch ? '#2f95dc' : '#555',
-              }}
-              title="Search (Cmd+F)"
-              aria-label="Search in book"
-              aria-expanded={showSearch}
-            >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <circle cx="11" cy="11" r="8" />
-                <line x1="21" y1="21" x2="16.65" y2="16.65" />
-              </svg>
-            </button>
-            {/* Themes & Settings */}
-            <button
-              onClick={() => { setShowThemes(!showThemes); if (!showThemes) { setShowToc(false); hlState.setShowHighlights(false); bmState.setShowBookmarks(false); } }}
-              style={{
-                ...webStyles.iconButton,
-                color: showThemes ? '#2f95dc' : '#555',
-                fontSize: '16px',
-                fontWeight: 600,
-              }}
-              title="Themes & Settings"
-              aria-label="Themes and font settings"
-              aria-expanded={showThemes}
-            >
-              Aa
-            </button>
-            {/* Bookmark current page (click) / Open bookmarks list (long press area) */}
-            <button
-              onClick={() => { bmState.setShowBookmarks(!bmState.showBookmarks); if (!bmState.showBookmarks) { setShowToc(false); hlState.setShowHighlights(false); } }}
-              style={{
-                ...webStyles.iconButton,
-                color: bmState.showBookmarks ? '#2f95dc' : (bmState.bookmarks.some((b) => b.page === currentPage) ? '#2f95dc' : '#555'),
-              }}
-              title={`Bookmarks (${bmState.bookmarks.length})`}
-              aria-label="Bookmarks"
-              aria-expanded={bmState.showBookmarks}
-            >
-              <svg width="20" height="20" viewBox="0 0 24 24" fill={bmState.bookmarks.some((b) => b.page === currentPage) ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" strokeLinejoin="round">
-                <path d="M6 4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18l-6-4-6 4V4z" />
-              </svg>
-            </button>
-          </div>
-        </div>
+        <ReaderToolbar
+          bookTitle={bookTitle || 'Loading...'}
+          activeTheme={activeTheme}
+          themeColors={themes[activeTheme]}
+          barsVisible={barsVisible}
+          showToc={showToc}
+          showHighlights={hlState.showHighlights}
+          showSearch={showSearch}
+          showThemes={showThemes}
+          showBookmarks={bmState.showBookmarks}
+          highlightCount={hlState.highlights.length}
+          bookmarkCount={bmState.bookmarks.length}
+          isCurrentPageBookmarked={bmState.bookmarks.some((b) => b.page === currentPage)}
+          onBack={() => router.back()}
+          onToggleToc={() => { setShowToc(!showToc); if (!showToc) { hlState.setShowHighlights(false); bmState.setShowBookmarks(false); } }}
+          onToggleHighlights={() => { hlState.setShowHighlights(!hlState.showHighlights); if (!hlState.showHighlights) { setShowToc(false); bmState.setShowBookmarks(false); } }}
+          onToggleSearch={() => { setShowSearch(!showSearch); if (!showSearch) setTimeout(() => searchInputRef.current?.focus(), 50); }}
+          onToggleThemes={() => { setShowThemes(!showThemes); if (!showThemes) { setShowToc(false); hlState.setShowHighlights(false); bmState.setShowBookmarks(false); } }}
+          onToggleBookmarks={() => { bmState.setShowBookmarks(!bmState.showBookmarks); if (!bmState.showBookmarks) { setShowToc(false); hlState.setShowHighlights(false); } }}
+        />
 
         {/* Themes & Settings dropdown */}
         {showThemes && (
@@ -967,135 +888,22 @@ export default function ReaderScreen() {
         )}
 
         {/* Page navigation bar — auto-hides */}
-        <div style={{ ...webStyles.pageBar, backgroundColor: themes[activeTheme].bg, borderTopColor: activeTheme === 'quiet' ? '#555' : '#f0f0f0', opacity: barsVisible ? 1 : 0, transition: 'opacity 0.3s', pointerEvents: barsVisible ? 'auto' as const : 'none' as const }}>
-          <button onClick={prevPage} style={webStyles.pageArrow} title="Previous page">
-            {'\u2039'}
-          </button>
-
-          {isEditingPage ? (
-            <input
-              ref={pageInputRef}
-              type="text"
-              value={pageInput}
-              onChange={(e) => setPageInput(e.target.value.replace(/[^0-9]/g, ''))}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') handlePageInputSubmit();
-                if (e.key === 'Escape') { setIsEditingPage(false); setPageInput(''); }
-              }}
-              onBlur={handlePageInputSubmit}
-              style={webStyles.pageInput}
-              placeholder={String(currentPage)}
-              autoFocus
-            />
-          ) : (
-            <button
-              onClick={() => {
-                setIsEditingPage(true);
-                setPageInput('');
-                setTimeout(() => pageInputRef.current?.focus(), 10);
-              }}
-              style={webStyles.pageDisplay}
-              title="Click to go to a specific page"
-            >
-              {currentPage} / {totalPages}
-            </button>
-          )}
-
-          <button onClick={nextPage} style={webStyles.pageArrow} title="Next page">
-            {'\u203A'}
-          </button>
-
-          <span style={webStyles.pagesLeftLabel}>
-            {pagesLeftInChapter === 0
-              ? 'End of chapter'
-              : `${pagesLeftInChapter} page${pagesLeftInChapter === 1 ? '' : 's'} left in chapter`}
-            {' · '}{Math.round(bookProgress * 100)}% of book
-          </span>
-        </div>
+        <PageBar
+          currentPage={currentPage}
+          totalPages={totalPages}
+          bookProgress={bookProgress}
+          pagesLeftInChapter={pagesLeftInChapter}
+          activeTheme={activeTheme}
+          themeColors={themes[activeTheme]}
+          barsVisible={barsVisible}
+          onPrev={prevPage}
+          onNext={nextPage}
+          onGoToPage={goToPage}
+        />
 
         {/* TTS Player */}
         {wordsReady && (
-          <div className="reader-ttsbar" style={{ ...webStyles.ttsBar, backgroundColor: themes[activeTheme].bg, borderTopColor: activeTheme === 'quiet' ? '#555' : '#eee', opacity: barsVisible ? 1 : 0, transition: 'opacity 0.3s', pointerEvents: barsVisible ? 'auto' as const : 'none' as const }}>
-            <button onClick={tts.handleStop} style={webStyles.ttsButton}>
-              {'\u25A0'}
-            </button>
-            <button
-              onClick={tts.handlePlayPause}
-              style={{
-                ...webStyles.ttsButton,
-                backgroundColor: tts.isPlaying ? '#333' : '#2f95dc',
-                color: '#fff',
-                padding: '6px 20px',
-                borderRadius: '16px',
-              }}
-            >
-              {tts.isPlaying ? '\u23F8' : '\u25B6'}
-            </button>
-            {tts.isEditingSpeed ? (
-              <input
-                type="text"
-                value={tts.speedInput}
-                onChange={(e) => tts.setSpeedInput(e.target.value.replace(/[^0-9.]/g, ''))}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') tts.handleSpeedInputSubmit();
-                  if (e.key === 'Escape') { tts.setIsEditingSpeed(false); tts.setSpeedInput(''); }
-                }}
-                onBlur={tts.handleSpeedInputSubmit}
-                placeholder={String(tts.ttsSpeed)}
-                autoFocus
-                style={webStyles.speedInput}
-              />
-            ) : (
-              <button
-                onClick={() => { tts.setIsEditingSpeed(true); tts.setSpeedInput(''); }}
-                style={webStyles.speedDisplay}
-                title="Click to type a speed (0.5-3)"
-              >
-                {tts.ttsSpeed}x
-              </button>
-            )}
-            <input
-              type="range"
-              min="0.5"
-              max="3"
-              step="0.25"
-              value={tts.ttsSpeed}
-              onChange={(e) => {
-                const newSpeed = parseFloat(e.target.value);
-                tts.handleSpeedChange(newSpeed);
-              }}
-              style={webStyles.speedSlider}
-            />
-            {tts.availableVoices.length > 0 && (
-              <select
-                value={tts.selectedVoiceId}
-                onChange={(e) => tts.selectVoice(e.target.value)}
-                style={webStyles.voiceSelect}
-              >
-                <option value="">Default voice</option>
-                {tts.ttsMode === 'browser' && tts.favoriteVoiceNames.length > 0 && tts.availableVoices.some((v) => tts.favoriteVoiceNames.includes(v.name)) && (
-                  <optgroup label="Favorites">
-                    {tts.availableVoices
-                      .filter((v) => tts.favoriteVoiceNames.includes(v.name))
-                      .map((v) => (
-                        <option key={v.id} value={v.id}>
-                          {v.name} ({v.lang})
-                        </option>
-                      ))}
-                  </optgroup>
-                )}
-                <optgroup label={tts.ttsMode === 'neural' ? 'Neural voices' : 'All voices'}>
-                  {tts.availableVoices
-                    .filter((v) => tts.ttsMode === 'neural' || !tts.favoriteVoiceNames.includes(v.name))
-                    .map((v) => (
-                      <option key={v.id} value={v.id}>
-                        {tts.ttsMode === 'neural' ? v.name.replace('Microsoft ', '').replace(' Online (Natural)', '') : v.name} ({v.lang})
-                      </option>
-                    ))}
-                </optgroup>
-              </select>
-            )}
-          </div>
+          <TtsBar tts={tts} activeTheme={activeTheme} themeColors={themes[activeTheme]} barsVisible={barsVisible} />
         )}
       </div>
     );
@@ -1119,46 +927,6 @@ const webStyles: Record<string, React.CSSProperties> = {
     height: '100vh',
     backgroundColor: '#fff',
     position: 'relative',
-  },
-  topBar: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    padding: '8px 12px',
-    borderBottom: '1px solid #e8e8e8',
-    minHeight: '44px',
-  },
-  topBarLeft: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '8px',
-    minWidth: '80px',
-  },
-  topBarRight: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '4px',
-    minWidth: '80px',
-    justifyContent: 'flex-end',
-  },
-  bookTitle: {
-    fontSize: '14px',
-    fontWeight: 500,
-    color: '#333',
-    textAlign: 'center',
-    flex: 1,
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-    whiteSpace: 'nowrap',
-  },
-  iconButton: {
-    background: 'none',
-    border: 'none',
-    fontSize: '20px',
-    cursor: 'pointer',
-    padding: '6px 10px',
-    color: '#555',
-    borderRadius: '4px',
   },
   iconButtonSmall: {
     background: 'none',
@@ -1211,66 +979,6 @@ const webStyles: Record<string, React.CSSProperties> = {
     justifyContent: 'center',
     backgroundColor: 'rgba(255,255,255,0.95)',
     zIndex: 10,
-  },
-  pageBar: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: '8px',
-    padding: '4px 16px',
-    borderTop: '1px solid #f0f0f0',
-    position: 'relative' as const,
-  },
-  pagesLeftLabel: {
-    position: 'absolute' as const,
-    right: '16px',
-    fontSize: '11px',
-    color: '#999',
-  },
-  pageArrow: {
-    background: 'none',
-    border: 'none',
-    fontSize: '22px',
-    cursor: 'pointer',
-    padding: '2px 10px',
-    color: '#999',
-    lineHeight: 1,
-  },
-  pageDisplay: {
-    background: 'none',
-    border: 'none',
-    fontSize: '12px',
-    color: '#999',
-    cursor: 'pointer',
-    padding: '4px 8px',
-    borderRadius: '4px',
-    minWidth: '60px',
-    textAlign: 'center',
-  },
-  pageInput: {
-    width: '50px',
-    padding: '3px 6px',
-    fontSize: '12px',
-    textAlign: 'center',
-    border: '1px solid #ccc',
-    borderRadius: '4px',
-    outline: 'none',
-  },
-  ttsBar: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: '12px',
-    padding: '8px 16px',
-    borderTop: '1px solid #eee',
-  },
-  ttsButton: {
-    background: 'none',
-    border: 'none',
-    fontSize: '14px',
-    cursor: 'pointer',
-    padding: '6px 12px',
-    color: '#555',
   },
   // Selection popup
   selectionPopup: {
@@ -1532,41 +1240,6 @@ const webStyles: Record<string, React.CSSProperties> = {
     borderRadius: '4px',
     outline: 'none',
     boxSizing: 'border-box' as const,
-  },
-  speedDisplay: {
-    background: 'none',
-    border: '1px solid transparent',
-    fontSize: '12px',
-    color: '#555',
-    cursor: 'pointer',
-    padding: '3px 6px',
-    borderRadius: '4px',
-    minWidth: '36px',
-    textAlign: 'center',
-  },
-  speedInput: {
-    width: '44px',
-    padding: '3px 6px',
-    fontSize: '12px',
-    textAlign: 'center',
-    border: '1px solid #ccc',
-    borderRadius: '4px',
-    outline: 'none',
-  },
-  voiceSelect: {
-    padding: '4px 8px',
-    fontSize: '12px',
-    border: '1px solid #ddd',
-    borderRadius: '4px',
-    backgroundColor: '#fff',
-    color: '#555',
-    maxWidth: '200px',
-    cursor: 'pointer',
-  },
-  speedSlider: {
-    width: '80px',
-    cursor: 'pointer',
-    accentColor: '#2f95dc',
   },
   // Progress bar
   progressBarTrack: {

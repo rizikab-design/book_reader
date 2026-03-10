@@ -32,6 +32,8 @@ import BookmarksPanel from '@/components/reader/BookmarksPanel';
 import HighlightsPanel from '@/components/reader/HighlightsPanel';
 import SearchPanel from '@/components/reader/SearchPanel';
 import ThemesPanel from '@/components/reader/ThemesPanel';
+import TtsBar from '@/components/reader/TtsBar';
+import PageBar from '@/components/reader/PageBar';
 
 const MAX_SEARCH_RESULTS = 50;
 const SEARCH_EXCERPT_CONTEXT = 30;
@@ -74,10 +76,7 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
   const thumbnailsContainerRef = useRef<HTMLDivElement | null>(null);
   const thumbnailCacheRef = useRef<Map<number, string>>(new Map());
 
-  // ── Page input ──────────────────────────────────────────────────────
-  const [isEditingPage, setIsEditingPage] = useState(false);
-  const [pageInput, setPageInput] = useState('');
-  const pageInputRef = useRef<HTMLInputElement | null>(null);
+  // (Page input state managed by PageBar component)
 
   // ── Panels ───────────────────────────────────────────────────────────
   const [showThemes, setShowThemes] = useState(false);
@@ -428,13 +427,8 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
   function nextPage() { setCurrentPage((p) => p < totalPagesRef.current ? p + 1 : p); }
   function prevPage() { setCurrentPage((p) => p > 1 ? p - 1 : p); }
 
-  function handlePageInputSubmit() {
-    const page = parseInt(pageInput, 10);
-    if (!isNaN(page) && page >= 1 && page <= totalPages) {
-      setCurrentPage(page);
-    }
-    setIsEditingPage(false);
-    setPageInput('');
+  function goToPage(page: number) {
+    if (page >= 1 && page <= totalPages) setCurrentPage(page);
   }
 
   const nextPageRef = useRef(nextPage);
@@ -873,81 +867,21 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
       )}
 
       {/* Page bar — auto-hides */}
-      <div style={{ ...s.pageBar, backgroundColor: themeColors.bg, borderTopColor: panelBorder, opacity: barsVisible ? 1 : 0, transition: 'opacity 0.3s', pointerEvents: barsVisible ? 'auto' as const : 'none' as const }}>
-        <button onClick={prevPage} style={s.pageArrow}>{'\u2039'}</button>
-        {isEditingPage ? (
-          <input
-            ref={pageInputRef}
-            type="text"
-            value={pageInput}
-            onChange={(e) => setPageInput(e.target.value.replace(/[^0-9]/g, ''))}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') handlePageInputSubmit();
-              if (e.key === 'Escape') { setIsEditingPage(false); setPageInput(''); }
-            }}
-            onBlur={handlePageInputSubmit}
-            style={{ width: '50px', padding: '3px 6px', fontSize: '12px', textAlign: 'center', border: '1px solid #ccc', borderRadius: '4px', outline: 'none' }}
-            placeholder={String(currentPage)}
-            autoFocus
-          />
-        ) : (
-          <button
-            onClick={() => {
-              setIsEditingPage(true);
-              setPageInput('');
-              setTimeout(() => pageInputRef.current?.focus(), 10);
-            }}
-            style={{ background: 'none', border: 'none', fontSize: '12px', color: '#999', cursor: 'pointer', padding: '4px 8px', borderRadius: '4px', minWidth: '60px', textAlign: 'center' }}
-            title="Click to go to a specific page"
-          >
-            {currentPage} / {totalPages}
-          </button>
-        )}
-        <button onClick={nextPage} style={s.pageArrow}>{'\u203A'}</button>
-        <span style={s.pagesLeftLabel}>{Math.round(progress * 100)}% of book</span>
-      </div>
+      <PageBar
+        currentPage={currentPage}
+        totalPages={totalPages}
+        bookProgress={progress}
+        activeTheme={activeTheme}
+        themeColors={themeColors}
+        barsVisible={barsVisible}
+        onPrev={prevPage}
+        onNext={nextPage}
+        onGoToPage={goToPage}
+      />
 
       {/* TTS bar — auto-hides */}
       {pageWords.length > 0 && (
-        <div className="pdf-ttsbar" style={{ ...s.ttsBar, backgroundColor: themeColors.bg, borderTopColor: panelBorder, opacity: barsVisible ? 1 : 0, transition: 'opacity 0.3s', pointerEvents: barsVisible ? 'auto' as const : 'none' as const }}>
-          <button onClick={tts.handleStop} style={s.ttsButton}>{'\u25A0'}</button>
-          <button onClick={tts.handlePlayPause} style={{
-            ...s.ttsButton, backgroundColor: tts.isPlaying ? '#333' : '#2f95dc',
-            color: '#fff', padding: '6px 20px', borderRadius: '16px',
-          }}>
-            {tts.isPlaying ? '\u23F8' : '\u25B6'}
-          </button>
-          {tts.isEditingSpeed ? (
-            <input type="text" value={tts.speedInput} onChange={(e) => tts.setSpeedInput(e.target.value.replace(/[^0-9.]/g, ''))}
-              onKeyDown={(e) => { if (e.key === 'Enter') tts.handleSpeedInputSubmit(); if (e.key === 'Escape') { tts.setIsEditingSpeed(false); tts.setSpeedInput(''); } }}
-              onBlur={tts.handleSpeedInputSubmit} placeholder={String(tts.ttsSpeed)} autoFocus style={s.speedInput} />
-          ) : (
-            <button onClick={() => { tts.setIsEditingSpeed(true); tts.setSpeedInput(''); }} style={s.speedDisplay}>{tts.ttsSpeed}x</button>
-          )}
-          <input type="range" min="0.5" max="3" step="0.25" value={tts.ttsSpeed}
-            onChange={(e) => {
-              const newSpeed = parseFloat(e.target.value);
-              tts.handleSpeedChange(newSpeed);
-            }}
-            style={{ width: '80px', cursor: 'pointer', accentColor: '#2f95dc' }} />
-          {tts.availableVoices.length > 0 && (
-            <select value={tts.selectedVoiceId} onChange={(e) => tts.selectVoice(e.target.value)} style={s.voiceSelect}>
-              <option value="">Default voice</option>
-              {tts.ttsMode === 'browser' && tts.favoriteVoiceNames.length > 0 && tts.availableVoices.some((v) => tts.favoriteVoiceNames.includes(v.name)) && (
-                <optgroup label="Favorites">
-                  {tts.availableVoices.filter((v) => tts.favoriteVoiceNames.includes(v.name)).map((v) => (
-                    <option key={v.id} value={v.id}>{v.name} ({v.lang})</option>
-                  ))}
-                </optgroup>
-              )}
-              <optgroup label={tts.ttsMode === 'neural' ? 'Neural voices' : 'All voices'}>
-                {tts.availableVoices.filter((v) => tts.ttsMode === 'neural' || !tts.favoriteVoiceNames.includes(v.name)).map((v) => (
-                  <option key={v.id} value={v.id}>{tts.ttsMode === 'neural' ? v.name.replace('Microsoft ', '').replace(' Online (Natural)', '') : v.name} ({v.lang})</option>
-                ))}
-              </optgroup>
-            </select>
-          )}
-        </div>
+        <TtsBar tts={tts} activeTheme={activeTheme} themeColors={themeColors} barsVisible={barsVisible} />
       )}
     </div>
   );
@@ -966,14 +900,6 @@ const s: Record<string, React.CSSProperties> = {
   pageChevron: { background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', width: '36px', flexShrink: 0, transition: 'opacity 0.15s' },
   pdfContainer: { flex: 1, overflow: 'auto', display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '16px 0', position: 'relative' },
   centerOverlay: { display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#999', fontSize: '14px', padding: '40px' },
-  pageBar: { display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', padding: '4px 16px', borderTop: '1px solid #f0f0f0', position: 'relative' },
-  pageArrow: { background: 'none', border: 'none', fontSize: '22px', cursor: 'pointer', padding: '2px 10px', color: '#999', lineHeight: 1 },
-  pagesLeftLabel: { position: 'absolute', right: '16px', fontSize: '11px', color: '#999' },
-  ttsBar: { display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '12px', padding: '8px 16px', borderTop: '1px solid #eee' },
-  ttsButton: { background: 'none', border: 'none', fontSize: '14px', cursor: 'pointer', padding: '6px 12px', color: '#555' },
-  speedDisplay: { background: 'none', border: '1px solid transparent', fontSize: '12px', color: '#555', cursor: 'pointer', padding: '3px 6px', borderRadius: '4px', minWidth: '36px', textAlign: 'center' },
-  speedInput: { width: '44px', padding: '3px 6px', fontSize: '12px', textAlign: 'center', border: '1px solid #ccc', borderRadius: '4px', outline: 'none' },
-  voiceSelect: { padding: '4px 8px', fontSize: '12px', border: '1px solid #ddd', borderRadius: '4px', backgroundColor: '#fff', color: '#555', maxWidth: '200px', cursor: 'pointer' },
   dropdownHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px', borderBottom: '1px solid #eee', fontSize: '14px' },
   closeBtn: { background: 'none', border: 'none', fontSize: '14px', cursor: 'pointer', color: '#999', padding: '4px 8px' },
   selectionPopup: { position: 'fixed', backgroundColor: '#fff', border: '1px solid #ddd', borderRadius: '12px', padding: '0 12px 12px 12px', boxShadow: '0 4px 16px rgba(0,0,0,0.15)', zIndex: 100, width: '280px' },
