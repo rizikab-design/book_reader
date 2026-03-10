@@ -534,13 +534,13 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
       {/* Top bar — auto-hides */}
       <div className="pdf-topbar" style={{ ...s.topBar, backgroundColor: themeColors.bg, borderBottomColor: panelBorder, opacity: barsVisible ? 1 : 0, transition: 'opacity 0.3s', pointerEvents: barsVisible ? 'auto' as const : 'none' as const }}>
         <div style={s.topBarLeft}>
-          <button onClick={() => router.back()} style={s.iconButton}>
+          <button onClick={() => router.back()} style={s.iconButton} aria-label="Go back to library">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="15 18 9 12 15 6" /></svg>
           </button>
           {/* TOC */}
           {tocItems.length > 0 && (
             <button onClick={() => { const opening = !showToc; closeAllPanels(); if (opening) setShowToc(true); }}
-              style={{ ...s.iconButton, color: showToc ? '#2f95dc' : '#555' }} title="Table of Contents">
+              style={{ ...s.iconButton, color: showToc ? '#2f95dc' : '#555' }} title="Table of Contents" aria-label="Table of contents" aria-expanded={showToc}>
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
                 <line x1="4" y1="6" x2="20" y2="6" /><line x1="4" y1="12" x2="20" y2="12" /><line x1="4" y1="18" x2="20" y2="18" />
               </svg>
@@ -548,14 +548,14 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
           )}
           {/* Thumbnails */}
           <button onClick={() => { const opening = !showThumbnails; closeAllPanels(); if (opening) setShowThumbnails(true); }}
-            style={{ ...s.iconButton, color: showThumbnails ? '#2f95dc' : '#555' }} title="Page Thumbnails">
+            style={{ ...s.iconButton, color: showThumbnails ? '#2f95dc' : '#555' }} title="Page Thumbnails" aria-label="Page thumbnails" aria-expanded={showThumbnails}>
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
               <rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" />
             </svg>
           </button>
           {/* Highlights */}
           <button onClick={() => { const opening = !hlState.showHighlights; closeAllPanels(); if (opening) hlState.setShowHighlights(true); }}
-            style={{ ...s.iconButton, color: hlState.showHighlights ? '#2f95dc' : '#555' }} title={`Highlights (${hlState.highlights.length})`}>
+            style={{ ...s.iconButton, color: hlState.showHighlights ? '#2f95dc' : '#555' }} title={`Highlights (${hlState.highlights.length})`} aria-label="Highlights and notes" aria-expanded={hlState.showHighlights}>
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
               <rect x="3" y="3" width="18" height="18" rx="2" /><line x1="7" y1="8" x2="17" y2="8" /><line x1="7" y1="12" x2="17" y2="12" /><line x1="7" y1="16" x2="13" y2="16" />
             </svg>
@@ -567,19 +567,19 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
         <div style={s.topBarRight}>
           {/* Search */}
           <button onClick={() => { const opening = !showSearch; closeAllPanels(); if (opening) openSearch(); }}
-            style={{ ...s.iconButton, color: showSearch ? '#2f95dc' : '#555' }} title="Search (Cmd+F)">
+            style={{ ...s.iconButton, color: showSearch ? '#2f95dc' : '#555' }} title="Search (Cmd+F)" aria-label="Search in book" aria-expanded={showSearch}>
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
             </svg>
           </button>
           {/* Themes */}
           <button onClick={() => { const opening = !showThemes; closeAllPanels(); if (opening) setShowThemes(true); }}
-            style={{ ...s.iconButton, color: showThemes ? '#2f95dc' : '#555', fontSize: '16px', fontWeight: 600 }} title="Themes">
+            style={{ ...s.iconButton, color: showThemes ? '#2f95dc' : '#555', fontSize: '16px', fontWeight: 600 }} title="Themes" aria-label="Themes and font settings" aria-expanded={showThemes}>
             Aa
           </button>
           {/* Bookmark toggle */}
           <button onClick={() => { const opening = !bmState.showBookmarks; closeAllPanels(); if (opening) bmState.setShowBookmarks(true); }}
-            style={{ ...s.iconButton, color: bmState.showBookmarks ? '#2f95dc' : (bmState.bookmarks.some((b) => b.page === currentPage) ? '#2f95dc' : '#555') }} title="Bookmarks">
+            style={{ ...s.iconButton, color: bmState.showBookmarks ? '#2f95dc' : (bmState.bookmarks.some((b) => b.page === currentPage) ? '#2f95dc' : '#555') }} title="Bookmarks" aria-label="Bookmarks" aria-expanded={bmState.showBookmarks}>
             <svg width="20" height="20" viewBox="0 0 24 24" fill={bmState.bookmarks.some((b) => b.page === currentPage) ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" strokeLinejoin="round">
               <path d="M6 4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18l-6-4-6 4V4z" />
             </svg>
@@ -686,7 +686,7 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
 
       {/* Keyboard shortcuts overlay */}
       {showShortcuts && (
-        <div style={s.shortcutsOverlay} onClick={() => setShowShortcuts(false)}>
+        <div style={s.shortcutsOverlay} onClick={() => setShowShortcuts(false)} role="dialog" aria-modal="true" aria-label="Keyboard shortcuts">
           <div style={{ ...s.shortcutsPanel, ...panelTheme }} onClick={(e) => e.stopPropagation()}>
             <div style={s.dropdownHeader}>
               <strong>Keyboard Shortcuts</strong>
@@ -863,7 +863,7 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
 
       {/* Toast notification */}
       {toast && (
-        <div style={s.toast}>{toast}</div>
+        <div role="status" aria-live="polite" style={s.toast}>{toast}</div>
       )}
 
       {/* Page bar — auto-hides */}
