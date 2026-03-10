@@ -7,6 +7,12 @@ let serverUtility;
 
 const PORT = 3001;
 
+// Allow programmatic audio playback without requiring a fresh user gesture.
+// Neural TTS fetches audio from the server (1-3s) after the user clicks Play,
+// and by that time Chromium's user-activation has expired. Without this flag
+// audio.play() silently rejects in Electron's renderer.
+app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
+
 function startServer() {
   const isPacked = app.isPackaged;
   const serverPath = isPacked

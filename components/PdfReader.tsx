@@ -15,6 +15,7 @@ import { router } from 'expo-router';
 import { stopSpeaking } from '@/lib/tts-engine';
 import type { PDFTextItem } from '@/types/pdfjs';
 import { HighlightColor, HIGHLIGHT_COLORS, ThemeName, themes, ReaderHighlight } from '@/hooks/reader-types';
+import { PDF_READER_STYLES as s } from '@/lib/styles';
 import { usePersistedState, bookKey } from '@/hooks/usePersistedState';
 import { renderThumbnail as renderThumbnailFn, createThumbnailObserver } from '@/lib/pdf/thumbnail-manager';
 import { applyHighlightsToTextLayer as applyHighlightsToTextLayerFn } from '@/lib/pdf/text-layer';
@@ -887,36 +888,4 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
   );
 }
 
-const s: Record<string, React.CSSProperties> = {
-  container: { display: 'flex', flexDirection: 'column', height: '100vh', position: 'relative' },
-  progressTrack: { height: '3px', backgroundColor: '#e0e0e0', width: '100%', flexShrink: 0 },
-  progressFill: { height: '100%', backgroundColor: '#2f95dc', transition: 'width 0.3s ease', borderRadius: '0 2px 2px 0' },
-  topBar: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 12px', borderBottom: '1px solid #e8e8e8', minHeight: '44px' },
-  topBarLeft: { display: 'flex', alignItems: 'center', gap: '8px', minWidth: '80px' },
-  topBarRight: { display: 'flex', alignItems: 'center', gap: '4px', minWidth: '80px', justifyContent: 'flex-end' },
-  bookTitleText: { fontSize: '14px', fontWeight: 500, textAlign: 'center', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-  iconButton: { background: 'none', border: 'none', cursor: 'pointer', padding: '6px 10px', color: '#555', borderRadius: '4px', fontSize: '20px' },
-  mainContent: { flex: 1, display: 'flex', overflow: 'hidden', position: 'relative', alignItems: 'center' },
-  pageChevron: { background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', width: '36px', flexShrink: 0, transition: 'opacity 0.15s' },
-  pdfContainer: { flex: 1, overflow: 'auto', display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '16px 0', position: 'relative' },
-  centerOverlay: { display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#999', fontSize: '14px', padding: '40px' },
-  dropdownHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px', borderBottom: '1px solid #eee', fontSize: '14px' },
-  closeBtn: { background: 'none', border: 'none', fontSize: '14px', cursor: 'pointer', color: '#999', padding: '4px 8px' },
-  selectionPopup: { position: 'fixed', backgroundColor: '#fff', border: '1px solid #ddd', borderRadius: '12px', padding: '0 12px 12px 12px', boxShadow: '0 4px 16px rgba(0,0,0,0.15)', zIndex: 100, width: '280px' },
-  cancelBtn: { background: 'none', border: '1px solid #ddd', borderRadius: '4px', padding: '5px 12px', fontSize: '12px', cursor: 'pointer', color: '#666' },
-  saveBtn: { background: '#2f95dc', border: 'none', borderRadius: '4px', padding: '5px 12px', fontSize: '12px', cursor: 'pointer', color: '#fff' },
-  actionBtn: { background: 'none', border: 'none', cursor: 'pointer', fontSize: '11px', padding: 0 },
-  shortcutsOverlay: { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200 },
-  shortcutsPanel: { width: '320px', backgroundColor: '#fff', borderRadius: '12px', boxShadow: '0 8px 32px rgba(0,0,0,0.2)', overflow: 'hidden' },
-  kbd: { display: 'inline-block', padding: '2px 8px', fontSize: '12px', fontFamily: 'monospace', backgroundColor: '#f0f0f0', border: '1px solid #ddd', borderRadius: '4px', minWidth: '40px', textAlign: 'center' },
-  thumbnailsSidebar: { position: 'absolute', top: '50px', left: '12px', width: '200px', maxHeight: 'calc(100vh - 140px)', backgroundColor: '#fafafa', border: '1px solid #e8e8e8', borderRadius: '8px', boxShadow: '0 4px 16px rgba(0,0,0,0.12)', zIndex: 50, display: 'flex', flexDirection: 'column', overflow: 'hidden' },
-  thumbnailsGrid: { overflow: 'auto', padding: '8px', display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '8px' },
-  thumbnailItem: { background: 'none', cursor: 'pointer', padding: '4px', borderRadius: '4px', display: 'flex', flexDirection: 'column', alignItems: 'center' },
-  thumbnailImg: { width: '100%', height: 'auto', borderRadius: '2px', display: 'block' },
-  thumbnailPlaceholder: { width: '100%', aspectRatio: '0.7', backgroundColor: '#f0f0f0', borderRadius: '2px', display: 'flex', alignItems: 'center', justifyContent: 'center' },
-  dragHandle: { cursor: 'grab', padding: '6px 0 4px 0', display: 'flex', justifyContent: 'center', userSelect: 'none' as const },
-  dragDots: { width: '32px', height: '4px', borderRadius: '2px', backgroundColor: '#ccc' },
-  renderingOverlay: { position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', zIndex: 10 },
-  spinner: { width: '32px', height: '32px', border: '3px solid #e0e0e0', borderTopColor: '#2f95dc', borderRadius: '50%', animation: 'spin 0.8s linear infinite' },
-  toast: { position: 'fixed', bottom: '80px', left: '50%', transform: 'translateX(-50%)', backgroundColor: 'rgba(0,0,0,0.75)', color: '#fff', padding: '8px 20px', borderRadius: '20px', fontSize: '13px', fontWeight: 500, zIndex: 200, pointerEvents: 'none', animation: 'fadeInOut 2s ease' },
-};
+// s (PDF styles) imported from @/lib/styles as PDF_READER_STYLES

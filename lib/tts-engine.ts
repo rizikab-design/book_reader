@@ -410,7 +410,12 @@ async function speakNeural(
           reject(new Error('Audio playback failed'));
         };
 
-        audio.play();
+        audio.play().catch((e) => {
+          console.error('Audio playback blocked:', e);
+          clearWordTimer();
+          currentAudio = null;
+          reject(new Error('Audio playback was blocked. If running in Electron, ensure autoplay-policy is set.'));
+        });
       });
 
     } catch (err: unknown) {

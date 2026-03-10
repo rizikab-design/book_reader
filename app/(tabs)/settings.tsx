@@ -91,7 +91,7 @@ export default function SettingsScreen() {
       const audio = new Audio(url);
       audio.onended = () => { setNeuralPreview(null); URL.revokeObjectURL(url); };
       audio.onerror = () => { setNeuralPreview(null); URL.revokeObjectURL(url); };
-      audio.play();
+      audio.play().catch(() => { setNeuralPreview(null); URL.revokeObjectURL(url); });
     } catch {
       setNeuralPreview(null);
     }
