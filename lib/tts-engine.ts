@@ -225,27 +225,6 @@ function cleanTextForTts(text: string): string {
     .trim();
 }
 
-// XML-escape text for safe embedding in SSML
-function escapeXml(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-
-// Wrap text in SSML <p> and <s> tags for natural prosody
-function wrapInSSML(text: string): string {
-  // Split into paragraphs if markers exist (from injectWordSpans)
-  const paragraphs = text.includes('\n\n')
-    ? text.split(/\n\n+/).filter(p => p.trim())
-    : [text];
-
-  return paragraphs.map(para => {
-    // Split into sentences
-    const sentences = para.split(/(?<=[.!?])\s+/).filter(s => s.trim());
-    if (sentences.length === 0) return '';
-    const inner = sentences.map(s => `<s>${escapeXml(s)}</s>`).join(' ');
-    return `<p>${inner}</p>`;
-  }).join('\n');
-}
-
 // Split text into chunks, preferring paragraph then sentence boundaries
 function splitIntoChunks(text: string): string[] {
   if (text.length <= MAX_CHUNK_SIZE) return [text];
@@ -478,6 +457,7 @@ export function pauseSpeaking(): void {
     stopSpeaking();
     return;
   }
+  clearWordTimer();
   if (currentAudio) {
     currentAudio.pause();
   } else {
@@ -487,7 +467,9 @@ export function pauseSpeaking(): void {
 
 export function resumeSpeaking(): void {
   if (currentAudio) {
-    currentAudio.play();
+    currentAudio.play().catch((e) => {
+      console.error('Resume audio play failed:', e);
+    });
   } else {
     window.speechSynthesis.resume();
   }

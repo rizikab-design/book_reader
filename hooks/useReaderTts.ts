@@ -74,7 +74,9 @@ export function useReaderTts({ bookId, getWords, onTtsEnd }: UseReaderTtsOptions
       setSelectedVoiceId(savedNeural);
       getNeuralVoices().then((voices) => {
         setAvailableVoices(voices.map((v) => ({ id: v.id, name: v.name, lang: v.locale })));
-      }).catch(() => {});
+      }).catch((e) => {
+        console.error('Failed to load neural voices in reader:', e);
+      });
     } else {
       getAvailableVoices().then((voices) => {
         const englishVoices = voices.filter((v) => v.lang.startsWith('en'));
@@ -121,8 +123,9 @@ export function useReaderTts({ bookId, getWords, onTtsEnd }: UseReaderTtsOptions
         if (ttsGenRef.current !== gen) return;
         setCurrentWordIndex(wordIndex + fromWordIndex);
       },
-      onError: () => {
+      onError: (error: string) => {
         if (ttsGenRef.current !== gen) return;
+        console.error('TTS error:', error);
         setPlayingState(false);
       },
     }, selectedVoiceRef.current);
@@ -137,6 +140,10 @@ export function useReaderTts({ bookId, getWords, onTtsEnd }: UseReaderTtsOptions
   function handlePlayPause() {
     if (isPlayingRef.current) {
       // Currently playing — pause
+      // Save resume position BEFORE pausing, because pauseSpeaking() may
+      // call stopSpeaking() (e.g. during neural fetch), which destroys state
+      const idx = currentWordIndexRef.current;
+      if (idx >= 0) resumeWordIndexRef.current = idx;
       pauseSpeaking();
       setPlayingState(false);
     } else if (isPaused()) {
