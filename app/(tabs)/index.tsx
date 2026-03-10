@@ -144,6 +144,7 @@ export default function LibraryScreen() {
         .upload-btn:hover { filter: brightness(0.92); }
         @media (max-width: 768px) {
           .book-grid { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)) !important; gap: 16px !important; }
+          .continue-reading-btn { flex-direction: column !important; align-items: flex-start !important; }
         }
         @media (max-width: 480px) {
           .book-grid { grid-template-columns: repeat(3, 1fr) !important; gap: 12px !important; }

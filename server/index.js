@@ -46,6 +46,13 @@ db.exec(`
   )
 `);
 
+// Add fileHash column for deduplication (idempotent)
+try {
+  db.exec('ALTER TABLE books ADD COLUMN fileHash TEXT');
+} catch (e) {
+  // Column already exists, ignore
+}
+
 // Migrate existing library.json if present and DB is empty
 const JSON_DB_FILE = path.join(DATA_ROOT, 'library.json');
 if (fs.existsSync(JSON_DB_FILE) && db.prepare('SELECT COUNT(*) AS cnt FROM books').get().cnt === 0) {
@@ -70,8 +77,9 @@ if (fs.existsSync(JSON_DB_FILE) && db.prepare('SELECT COUNT(*) AS cnt FROM books
 const stmtAll = db.prepare('SELECT * FROM books ORDER BY addedAt DESC');
 const stmtGetById = db.prepare('SELECT * FROM books WHERE id = ?');
 const stmtInsert = db.prepare(
-  'INSERT INTO books (id, filename, originalName, title, author, coverFile, format, addedAt, fileSize) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+  'INSERT INTO books (id, filename, originalName, title, author, coverFile, format, addedAt, fileSize, fileHash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
 );
+const stmtGetByHash = db.prepare('SELECT * FROM books WHERE fileHash = ?');
 const stmtDelete = db.prepare('DELETE FROM books WHERE id = ?');
 
 // Middleware — restrict CORS to localhost origins
@@ -136,6 +144,18 @@ app.post('/api/books', upload.single('file'), async (req, res) => {
     const bookFilename = req.file.filename;
     const originalName = req.file.originalname;
 
+    // Deduplicate by file hash
+    const fileBuffer = fs.readFileSync(bookPath);
+    const fileHash = crypto.createHash('sha256').update(fileBuffer).digest('hex');
+    const existing = stmtGetByHash.get(fileHash);
+    if (existing) {
+      fs.unlinkSync(bookPath);
+      return res.status(409).json({
+        error: `This book already exists as "${existing.title}"`,
+        existingId: existing.id,
+      });
+    }
+
     const ext = path.extname(originalName).toLowerCase();
     const format = ext === '.pdf' ? 'pdf' : 'epub';
 
@@ -163,7 +183,7 @@ app.post('/api/books', upload.single('file'), async (req, res) => {
       fileSize: req.file.size,
     };
 
-    stmtInsert.run(book.id, book.filename, book.originalName, book.title, book.author, book.coverFile, book.format, book.addedAt, book.fileSize);
+    stmtInsert.run(book.id, book.filename, book.originalName, book.title, book.author, book.coverFile, book.format, book.addedAt, book.fileSize, fileHash);
 
     res.json(book);
   } catch (err) {
@@ -363,28 +383,13 @@ async function extractPdfMetadata(bookPath, bookFilename) {
 
 // --- Neural TTS via Microsoft Edge (free, high quality) ---
 
-// Cache a TTS instance per voice to avoid re-handshaking
-const ttsInstances = new Map(); // voice → { instance, lastUsed }
-const TTS_INSTANCE_LIMIT = 5;
-const TTS_STALE_MS = 30 * 60 * 1000; // 30 minutes
-
-async function getTtsInstance(voice) {
-  const cached = ttsInstances.get(voice);
-  if (cached) {
-    if (Date.now() - cached.lastUsed > TTS_STALE_MS) {
-      ttsInstances.delete(voice);
-    } else {
-      cached.lastUsed = Date.now();
-      return cached.instance;
-    }
-  }
-  const tts = new MsEdgeTTS();
+// Create a fresh TTS instance per request.
+// msedge-tts reuses a WebSocket connection, but stale connections cause silent
+// failures: the old socket's onclose handler kills new request streams.
+// A fresh instance per request avoids this (~200ms overhead is acceptable).
+async function createTtsInstance(voice) {
+  const tts = new MsEdgeTTS({ enableLogger: false });
   await tts.setMetadata(voice, OUTPUT_FORMAT.AUDIO_24KHZ_96KBITRATE_MONO_MP3);
-  if (ttsInstances.size >= TTS_INSTANCE_LIMIT) {
-    const oldest = ttsInstances.keys().next().value;
-    ttsInstances.delete(oldest);
-  }
-  ttsInstances.set(voice, { instance: tts, lastUsed: Date.now() });
   return tts;
 }
 
@@ -413,6 +418,7 @@ const ttsLimiter = rateLimit({
   legacyHeaders: false,
 });
 app.post('/api/tts/speak', ttsLimiter, async (req, res) => {
+  let tts = null;
   try {
     const { text, voice, rate, pitch, volume } = req.body;
     if (!text || typeof text !== 'string') {
@@ -423,7 +429,7 @@ app.post('/api/tts/speak', ttsLimiter, async (req, res) => {
     }
 
     const voiceId = voice || 'en-US-AriaNeural';
-    const tts = await getTtsInstance(voiceId);
+    tts = await createTtsInstance(voiceId);
 
     // Convert rate multiplier (1 = normal, 1.5 = 50% faster) to percentage string
     const ratePercent = rate ? `${rate >= 1 ? '+' : ''}${Math.round((rate - 1) * 100)}%` : '+0%';
@@ -434,18 +440,35 @@ app.post('/api/tts/speak', ttsLimiter, async (req, res) => {
 
     const result = tts.toStream(text, { rate: ratePercent, pitch: pitchValue, volume: volumeValue });
 
-    res.setHeader('Content-Type', 'audio/mpeg');
-    res.setHeader('Transfer-Encoding', 'chunked');
-    result.audioStream.pipe(res);
-    result.audioStream.on('error', (err) => {
-      console.error('TTS stream error:', err.message);
-      if (!res.headersSent) res.status(500).json({ error: 'TTS generation failed' });
+    // Buffer the entire audio stream before sending to catch errors early.
+    // If we pipe directly and the WebSocket dies mid-stream, headers are already
+    // sent so we can't return a proper error JSON to the client.
+    const chunks = [];
+    await new Promise((resolve, reject) => {
+      result.audioStream.on('data', (chunk) => chunks.push(chunk));
+      result.audioStream.on('end', resolve);
+      result.audioStream.on('error', reject);
+      // Safety timeout — don't hang forever if the stream stalls
+      const timeout = setTimeout(() => reject(new Error('TTS stream timed out')), 30000);
+      result.audioStream.on('end', () => clearTimeout(timeout));
+      result.audioStream.on('error', () => clearTimeout(timeout));
     });
+
+    const audioBuffer = Buffer.concat(chunks);
+    if (audioBuffer.length === 0) {
+      console.error('TTS returned empty audio for voice:', voiceId);
+      return res.status(500).json({ error: 'TTS returned empty audio' });
+    }
+
+    res.setHeader('Content-Type', 'audio/mpeg');
+    res.setHeader('Content-Length', audioBuffer.length);
+    res.send(audioBuffer);
   } catch (err) {
-    console.error('TTS speak error:', err.message);
-    // Re-create instance on failure (connection may be stale)
-    if (req.body?.voice) ttsInstances.delete(req.body.voice);
-    if (!res.headersSent) res.status(500).json({ error: 'TTS generation failed' });
+    console.error('TTS speak error:', err.message || err);
+    if (!res.headersSent) res.status(500).json({ error: 'TTS generation failed: ' + (err.message || 'unknown error') });
+  } finally {
+    // Always close the WebSocket to avoid resource leaks
+    try { if (tts) tts.close(); } catch (e) { /* ignore */ }
   }
 });
 
@@ -476,7 +499,11 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: 'Internal server error' });
 });
 
-app.listen(PORT, () => {
-  console.log(`Book Reader server running at http://localhost:${PORT}`);
-  console.log(`Books stored in: ${BOOKS_DIR}`);
-});
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`Book Reader server running at http://localhost:${PORT}`);
+    console.log(`Books stored in: ${BOOKS_DIR}`);
+  });
+}
+
+module.exports = app;
