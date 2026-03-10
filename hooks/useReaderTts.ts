@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { speakText, stopSpeaking, pauseSpeaking, resumeSpeaking, cancelAndSpeak, getAvailableVoices, isPaused } from '@/lib/tts-engine';
+import { speakText, stopSpeaking, pauseSpeaking, resumeSpeaking, getAvailableVoices, isPaused, getTTSMode, getNeuralVoices, getNeuralVoice, setNeuralVoice, type TTSMode, type NeuralVoiceInfo } from '@/lib/tts-engine';
 import { usePersistedState, bookKey } from '@/hooks/usePersistedState';
 
 /** Keeps a ref always in sync with the latest value (no stale closures). */
@@ -7,6 +7,15 @@ function useLatest<T>(value: T) {
   const ref = useRef(value);
   ref.current = value;
   return ref;
+}
+
+/** Unified voice type for both browser and neural voices */
+export interface UnifiedVoice {
+  id: string;
+  name: string;
+  lang: string;
+  /** Only set for browser voices */
+  browserVoice?: SpeechSynthesisVoice;
 }
 
 export interface UseReaderTtsOptions {
@@ -20,11 +29,15 @@ export function useReaderTts({ bookId, getWords, onTtsEnd }: UseReaderTtsOptions
   const [isPlaying, setIsPlaying] = useState(false);
   const [ttsSpeed, setTtsSpeed] = usePersistedState<number>(bookKey(bookId, 'ttsSpeed'), 1);
   const [currentWordIndex, setCurrentWordIndex] = useState(-1);
-  const [availableVoices, setAvailableVoices] = useState<SpeechSynthesisVoice[]>([]);
-  const [selectedVoice, setSelectedVoice] = useState<SpeechSynthesisVoice | null>(null);
+  const [ttsMode, setTtsMode] = useState<TTSMode>(() => getTTSMode());
+  const [availableVoices, setAvailableVoices] = useState<UnifiedVoice[]>([]);
+  const [selectedVoiceId, setSelectedVoiceId] = useState<string>('');
   const [favoriteVoiceNames, setFavoriteVoiceNames] = useState<string[]>([]);
   const [isEditingSpeed, setIsEditingSpeed] = useState(false);
   const [speedInput, setSpeedInput] = useState('');
+
+  // Keep legacy selectedVoice ref for browser TTS
+  const [selectedVoice, setSelectedVoice] = useState<SpeechSynthesisVoice | null>(null);
 
   // ── Refs (stale closure prevention via useLatest) ─────────────────────
   const ttsGenRef = useRef(0);
@@ -53,20 +66,32 @@ export function useReaderTts({ bookId, getWords, onTtsEnd }: UseReaderTtsOptions
       if (stored) setFavoriteVoiceNames(JSON.parse(stored));
     } catch (e) { console.warn('Failed to load favorite voices:', e); }
 
-    getAvailableVoices().then((voices) => {
-      const englishVoices = voices.filter((v) => v.lang.startsWith('en'));
-      setAvailableVoices(englishVoices);
-      try {
-        const preferredName = localStorage.getItem('tts-preferred-voice');
-        if (preferredName) {
-          const voice = englishVoices.find((v) => v.name === preferredName);
-          if (voice) {
-            setSelectedVoice(voice);
-            selectedVoiceRef.current = voice;
+    const mode = getTTSMode();
+    setTtsMode(mode);
+
+    if (mode === 'neural') {
+      const savedNeural = getNeuralVoice();
+      setSelectedVoiceId(savedNeural);
+      getNeuralVoices().then((voices) => {
+        setAvailableVoices(voices.map((v) => ({ id: v.id, name: v.name, lang: v.locale })));
+      }).catch(() => {});
+    } else {
+      getAvailableVoices().then((voices) => {
+        const englishVoices = voices.filter((v) => v.lang.startsWith('en'));
+        setAvailableVoices(englishVoices.map((v) => ({ id: v.name, name: v.name, lang: v.lang, browserVoice: v })));
+        try {
+          const preferredName = localStorage.getItem('tts-preferred-voice');
+          if (preferredName) {
+            const voice = englishVoices.find((v) => v.name === preferredName);
+            if (voice) {
+              setSelectedVoice(voice);
+              selectedVoiceRef.current = voice;
+              setSelectedVoiceId(voice.name);
+            }
           }
-        }
-      } catch (e) { console.warn('Failed to load preferred voice:', e); }
-    });
+        } catch (e) { console.warn('Failed to load preferred voice:', e); }
+      });
+    }
   }, []);
 
   // ── Clean up TTS on unmount ────────────────────────────────────────────
@@ -142,7 +167,7 @@ export function useReaderTts({ bookId, getWords, onTtsEnd }: UseReaderTtsOptions
       setTtsSpeed(val);
       if (isPlayingRef.current) {
         const resumeFrom = currentWordIndexRef.current >= 0 ? currentWordIndexRef.current : 0;
-        cancelAndSpeak();
+        stopSpeaking();
         startTTSFromWord(resumeFrom, val);
       }
     }
@@ -154,8 +179,30 @@ export function useReaderTts({ bookId, getWords, onTtsEnd }: UseReaderTtsOptions
     setTtsSpeed(newSpeed);
     if (isPlayingRef.current) {
       const resumeFrom = currentWordIndexRef.current >= 0 ? currentWordIndexRef.current : 0;
-      cancelAndSpeak();
+      stopSpeaking();
       startTTSFromWord(resumeFrom, newSpeed);
+    }
+  }
+
+  /** Unified voice selection handler — works for both browser and neural */
+  function selectVoice(voiceId: string) {
+    setSelectedVoiceId(voiceId);
+    if (ttsMode === 'neural') {
+      setNeuralVoice(voiceId);
+    } else {
+      const uv = availableVoices.find((v) => v.id === voiceId);
+      if (uv?.browserVoice) {
+        setSelectedVoice(uv.browserVoice);
+        selectedVoiceRef.current = uv.browserVoice;
+      } else {
+        setSelectedVoice(null);
+        selectedVoiceRef.current = null;
+      }
+    }
+    if (isPlayingRef.current) {
+      const resumeFrom = currentWordIndexRef.current >= 0 ? currentWordIndexRef.current : 0;
+      stopSpeaking();
+      startTTSFromWord(resumeFrom, ttsSpeedRef.current);
     }
   }
 
@@ -172,7 +219,10 @@ export function useReaderTts({ bookId, getWords, onTtsEnd }: UseReaderTtsOptions
     setIsEditingSpeed,
     speedInput,
     setSpeedInput,
+    ttsMode,
     availableVoices,
+    selectedVoiceId,
+    selectVoice,
     selectedVoice,
     setSelectedVoice,
     favoriteVoiceNames,

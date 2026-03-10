@@ -38,6 +38,26 @@ export function setNeuralVoice(voiceId: string) {
   localStorage.setItem(NEURAL_VOICE_KEY, voiceId);
 }
 
+// ── Neural pitch & volume ─────────────────────────────────────────────
+const NEURAL_PITCH_KEY = 'tts-neural-pitch';
+const NEURAL_VOLUME_KEY = 'tts-neural-volume';
+
+export function getNeuralPitch(): number {
+  try { return parseInt(localStorage.getItem(NEURAL_PITCH_KEY) || '0', 10); }
+  catch { return 0; }
+}
+export function setNeuralPitch(val: number) {
+  localStorage.setItem(NEURAL_PITCH_KEY, String(val));
+}
+
+export function getNeuralVolume(): number {
+  try { return parseInt(localStorage.getItem(NEURAL_VOLUME_KEY) || '100', 10); }
+  catch { return 100; }
+}
+export function setNeuralVolume(val: number) {
+  localStorage.setItem(NEURAL_VOLUME_KEY, String(val));
+}
+
 export interface NeuralVoiceInfo {
   id: string;
   name: string;
@@ -192,7 +212,75 @@ function speakBrowser(
 // ── Neural TTS (via server) ───────────────────────────────────────────
 const MAX_CHUNK_SIZE = 2000;
 
+// Text cleanup for more natural speech
+function cleanTextForTts(text: string): string {
+  return text
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '')      // control characters
+    .replace(/[\u201C\u201D]/g, '"')                       // smart double quotes
+    .replace(/[\u2018\u2019]/g, "'")                       // smart single quotes
+    .replace(/[\u2013\u2014]/g, ', ')                      // em/en dashes → pause
+    .replace(/\u2026/g, '...')                             // unicode ellipsis
+    .replace(/\.{4,}/g, '...')                             // excessive dots
+    .replace(/[ \t]+/g, ' ')                               // collapse spaces
+    .replace(/ ([,.!?;:])/g, '$1')                         // remove space before punctuation
+    .trim();
+}
+
+// XML-escape text for safe embedding in SSML
+function escapeXml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// Wrap text in SSML <p> and <s> tags for natural prosody
+function wrapInSSML(text: string): string {
+  // Split into paragraphs if markers exist (from injectWordSpans)
+  const paragraphs = text.includes('\n\n')
+    ? text.split(/\n\n+/).filter(p => p.trim())
+    : [text];
+
+  return paragraphs.map(para => {
+    // Split into sentences
+    const sentences = para.split(/(?<=[.!?])\s+/).filter(s => s.trim());
+    if (sentences.length === 0) return '';
+    const inner = sentences.map(s => `<s>${escapeXml(s)}</s>`).join(' ');
+    return `<p>${inner}</p>`;
+  }).join('\n');
+}
+
+// Split text into chunks, preferring paragraph then sentence boundaries
 function splitIntoChunks(text: string): string[] {
+  if (text.length <= MAX_CHUNK_SIZE) return [text];
+
+  // Try paragraph-level splitting first
+  const paragraphs = text.includes('\n\n')
+    ? text.split(/\n\n+/).filter(p => p.trim())
+    : null;
+
+  if (paragraphs && paragraphs.length > 1) {
+    const chunks: string[] = [];
+    let current = '';
+    for (const para of paragraphs) {
+      if (para.length > MAX_CHUNK_SIZE) {
+        // Flush current accumulator
+        if (current.trim()) { chunks.push(current.trim()); current = ''; }
+        // Split oversized paragraph by sentences
+        chunks.push(...splitBySentences(para));
+      } else if ((current + '\n\n' + para).length > MAX_CHUNK_SIZE) {
+        if (current.trim()) chunks.push(current.trim());
+        current = para;
+      } else {
+        current = current ? current + '\n\n' + para : para;
+      }
+    }
+    if (current.trim()) chunks.push(current.trim());
+    return chunks;
+  }
+
+  // No paragraph markers — fall back to sentence splitting
+  return splitBySentences(text);
+}
+
+function splitBySentences(text: string): string[] {
   if (text.length <= MAX_CHUNK_SIZE) return [text];
   const chunks: string[] = [];
   let remaining = text;
@@ -201,7 +289,6 @@ function splitIntoChunks(text: string): string[] {
       chunks.push(remaining);
       break;
     }
-    // Find the last sentence boundary within the limit
     const slice = remaining.slice(0, MAX_CHUNK_SIZE);
     let splitAt = -1;
     const re = /[.!?]+\s+/g;
@@ -210,7 +297,6 @@ function splitIntoChunks(text: string): string[] {
       splitAt = m.index + m[0].length;
     }
     if (splitAt <= 0) {
-      // No sentence boundary found — split at last space
       const lastSpace = slice.lastIndexOf(' ');
       splitAt = lastSpace > 0 ? lastSpace + 1 : MAX_CHUNK_SIZE;
     }
@@ -229,8 +315,9 @@ async function speakNeural(
 ): Promise<void> {
   stopSpeaking();
 
-  const allWords = text.split(/\s+/).filter((w) => w.length > 0);
-  const chunks = splitIntoChunks(text);
+  const cleaned = cleanTextForTts(text);
+  const allWords = cleaned.split(/\s+/).filter((w) => w.length > 0);
+  const chunks = splitIntoChunks(cleaned);
   neuralGeneration++;
   const myGeneration = neuralGeneration;
 
@@ -260,7 +347,13 @@ async function speakNeural(
       const res = await fetch(`${API_BASE}/api/tts/speak`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: chunk, voice: voiceId, rate }),
+        body: JSON.stringify({
+          text: wrapInSSML(chunk),
+          voice: voiceId,
+          rate,
+          pitch: getNeuralPitch(),
+          volume: getNeuralVolume(),
+        }),
         signal: abort.signal,
       });
 

@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { StyleSheet, Platform } from 'react-native';
 
 import { Text, View } from '@/components/Themed';
-import { getAvailableVoices, getTTSMode, setTTSMode, getNeuralVoice, setNeuralVoice, getNeuralVoices, type TTSMode, type NeuralVoiceInfo } from '@/lib/tts-engine';
+import { getAvailableVoices, getTTSMode, setTTSMode, getNeuralVoice, setNeuralVoice, getNeuralVoices, getNeuralPitch, setNeuralPitch, getNeuralVolume, setNeuralVolume, type TTSMode, type NeuralVoiceInfo } from '@/lib/tts-engine';
 import { getGoogleClientId, setGoogleClientId } from '@/lib/google-drive';
 import { API_BASE } from '@/lib/config';
 
@@ -33,6 +33,8 @@ export default function SettingsScreen() {
   const [neuralVoices, setNeuralVoices] = useState<NeuralVoiceInfo[]>([]);
   const [neuralVoice, setNeuralVoiceState] = useState<string>('en-US-AriaNeural');
   const [neuralPreview, setNeuralPreview] = useState<string | null>(null);
+  const [pitch, setPitchState] = useState<number>(() => getNeuralPitch());
+  const [volume, setVolumeState] = useState<number>(() => getNeuralVolume());
 
   useEffect(() => {
     if (Platform.OS !== 'web') return;
@@ -198,6 +200,28 @@ export default function SettingsScreen() {
               ))}
               {neuralVoices.length === 0 && <option value="">Loading voices...</option>}
             </select>
+
+            {/* Pitch control */}
+            <div style={{ marginBottom: '12px' }}>
+              <label style={{ fontSize: '13px', color: '#555', display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
+                <span>Pitch</span>
+                <span style={{ color: '#999' }}>{pitch >= 0 ? '+' : ''}{pitch}Hz</span>
+              </label>
+              <input type="range" min="-50" max="50" value={pitch}
+                onChange={(e) => { const v = parseInt(e.target.value, 10); setPitchState(v); setNeuralPitch(v); }}
+                style={{ width: '100%' }} />
+            </div>
+
+            {/* Volume control */}
+            <div style={{ marginBottom: '16px' }}>
+              <label style={{ fontSize: '13px', color: '#555', display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
+                <span>Volume</span>
+                <span style={{ color: '#999' }}>{volume}%</span>
+              </label>
+              <input type="range" min="0" max="100" value={volume}
+                onChange={(e) => { const v = parseInt(e.target.value, 10); setVolumeState(v); setNeuralVolume(v); }}
+                style={{ width: '100%' }} />
+            </div>
 
             <div style={webStyles.voiceGroup}>
               <div style={webStyles.groupLabel}>Preview Neural Voices ({neuralVoices.length})</div>

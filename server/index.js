@@ -373,7 +373,7 @@ async function getTtsInstance(voice) {
     }
   }
   const tts = new MsEdgeTTS();
-  await tts.setMetadata(voice, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
+  await tts.setMetadata(voice, OUTPUT_FORMAT.AUDIO_24KHZ_96KBITRATE_MONO_MP3);
   if (ttsInstances.size >= TTS_INSTANCE_LIMIT) {
     const oldest = ttsInstances.keys().next().value;
     ttsInstances.delete(oldest);
@@ -401,14 +401,14 @@ app.get('/api/tts/voices', async (req, res) => {
 const MAX_TTS_LENGTH = 50000;
 const ttsLimiter = rateLimit({
   windowMs: 60 * 1000,
-  max: 20,
+  max: 60,
   message: { error: 'Too many TTS requests. Please wait a minute before trying again.' },
   standardHeaders: true,
   legacyHeaders: false,
 });
 app.post('/api/tts/speak', ttsLimiter, async (req, res) => {
   try {
-    const { text, voice, rate } = req.body;
+    const { text, voice, rate, pitch, volume } = req.body;
     if (!text || typeof text !== 'string') {
       return res.status(400).json({ error: 'Text is required' });
     }
@@ -421,8 +421,12 @@ app.post('/api/tts/speak', ttsLimiter, async (req, res) => {
 
     // Convert rate multiplier (1 = normal, 1.5 = 50% faster) to percentage string
     const ratePercent = rate ? `${rate >= 1 ? '+' : ''}${Math.round((rate - 1) * 100)}%` : '+0%';
+    // Pitch: integer offset in Hz (e.g., 10 → "+10Hz", -5 → "-5Hz")
+    const pitchValue = pitch ? `${pitch >= 0 ? '+' : ''}${Math.round(pitch)}Hz` : '+0Hz';
+    // Volume: 0-100 (default 100)
+    const volumeValue = typeof volume === 'number' ? Math.max(0, Math.min(100, volume)) : 100;
 
-    const result = tts.toStream(text, { rate: ratePercent });
+    const result = tts.toStream(text, { rate: ratePercent, pitch: pitchValue, volume: volumeValue });
 
     res.setHeader('Content-Type', 'audio/mpeg');
     res.setHeader('Transfer-Encoding', 'chunked');

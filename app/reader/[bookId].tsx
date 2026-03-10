@@ -250,8 +250,20 @@ export default function ReaderScreen() {
       textNodes.push(walker.currentNode as globalThis.Text);
     }
 
+    // Detect block-level parent for paragraph boundary markers
+    const BLOCK_TAGS = new Set(['p', 'div', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'blockquote', 'section', 'article']);
+    function getBlockParent(node: Node): Element | null {
+      let el = node.parentElement;
+      while (el && el !== body) {
+        if (BLOCK_TAGS.has(el.tagName.toLowerCase())) return el;
+        el = el.parentElement;
+      }
+      return body;
+    }
+
     let wordIndex = 0;
     const allWords: string[] = [];
+    let lastBlockParent: Element | null = null;
 
     for (const textNode of textNodes) {
       const text = textNode.textContent || '';
@@ -259,6 +271,13 @@ export default function ReaderScreen() {
 
       const parent = textNode.parentNode as Element;
       if (!parent) continue;
+
+      // Insert paragraph break marker when block parent changes
+      const blockParent = getBlockParent(textNode);
+      if (lastBlockParent && blockParent !== lastBlockParent && allWords.length > 0) {
+        allWords.push('\n\n');
+      }
+      lastBlockParent = blockParent;
 
       const parts = text.split(/(\s+)/);
       const fragment = doc.createDocumentFragment();
@@ -1282,37 +1301,28 @@ export default function ReaderScreen() {
             />
             {tts.availableVoices.length > 0 && (
               <select
-                value={tts.selectedVoice?.name || ''}
-                onChange={(e) => {
-                  const voice = tts.availableVoices.find((v) => v.name === e.target.value) || null;
-                  tts.setSelectedVoice(voice);
-                  tts.selectedVoiceRef.current = voice;
-                  if (tts.isPlaying) {
-                    const resumeFrom = tts.currentWordIndex >= 0 ? tts.currentWordIndex : 0;
-                    stopSpeaking();
-                    tts.startTTSFromWord(resumeFrom, tts.ttsSpeed);
-                  }
-                }}
+                value={tts.selectedVoiceId}
+                onChange={(e) => tts.selectVoice(e.target.value)}
                 style={webStyles.voiceSelect}
               >
                 <option value="">Default voice</option>
-                {tts.favoriteVoiceNames.length > 0 && tts.availableVoices.some((v) => tts.favoriteVoiceNames.includes(v.name)) && (
+                {tts.ttsMode === 'browser' && tts.favoriteVoiceNames.length > 0 && tts.availableVoices.some((v) => tts.favoriteVoiceNames.includes(v.name)) && (
                   <optgroup label="Favorites">
                     {tts.availableVoices
                       .filter((v) => tts.favoriteVoiceNames.includes(v.name))
                       .map((v) => (
-                        <option key={v.name} value={v.name}>
+                        <option key={v.id} value={v.id}>
                           {v.name} ({v.lang})
                         </option>
                       ))}
                   </optgroup>
                 )}
-                <optgroup label="All voices">
+                <optgroup label={tts.ttsMode === 'neural' ? 'Neural voices' : 'All voices'}>
                   {tts.availableVoices
-                    .filter((v) => !tts.favoriteVoiceNames.includes(v.name))
+                    .filter((v) => tts.ttsMode === 'neural' || !tts.favoriteVoiceNames.includes(v.name))
                     .map((v) => (
-                      <option key={v.name} value={v.name}>
-                        {v.name} ({v.lang})
+                      <option key={v.id} value={v.id}>
+                        {tts.ttsMode === 'neural' ? v.name.replace('Microsoft ', '').replace(' Online (Natural)', '') : v.name} ({v.lang})
                       </option>
                     ))}
                 </optgroup>

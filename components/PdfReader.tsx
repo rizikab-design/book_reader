@@ -967,22 +967,18 @@ export default function PdfReader({ bookUrl, bookId, bookTitle }: PdfReaderProps
             }}
             style={{ width: '80px', cursor: 'pointer', accentColor: '#2f95dc' }} />
           {tts.availableVoices.length > 0 && (
-            <select value={tts.selectedVoice?.name || ''} onChange={(e) => {
-              const voice = tts.availableVoices.find((v) => v.name === e.target.value) || null;
-              tts.setSelectedVoice(voice); tts.selectedVoiceRef.current = voice;
-              if (tts.isPlaying) { const r = tts.currentWordIndex >= 0 ? tts.currentWordIndex : 0; stopSpeaking(); tts.startTTSFromWord(r, tts.ttsSpeed); }
-            }} style={s.voiceSelect}>
+            <select value={tts.selectedVoiceId} onChange={(e) => tts.selectVoice(e.target.value)} style={s.voiceSelect}>
               <option value="">Default voice</option>
-              {tts.favoriteVoiceNames.length > 0 && tts.availableVoices.some((v) => tts.favoriteVoiceNames.includes(v.name)) && (
+              {tts.ttsMode === 'browser' && tts.favoriteVoiceNames.length > 0 && tts.availableVoices.some((v) => tts.favoriteVoiceNames.includes(v.name)) && (
                 <optgroup label="Favorites">
                   {tts.availableVoices.filter((v) => tts.favoriteVoiceNames.includes(v.name)).map((v) => (
-                    <option key={v.name} value={v.name}>{v.name} ({v.lang})</option>
+                    <option key={v.id} value={v.id}>{v.name} ({v.lang})</option>
                   ))}
                 </optgroup>
               )}
-              <optgroup label="All voices">
-                {tts.availableVoices.filter((v) => !tts.favoriteVoiceNames.includes(v.name)).map((v) => (
-                  <option key={v.name} value={v.name}>{v.name} ({v.lang})</option>
+              <optgroup label={tts.ttsMode === 'neural' ? 'Neural voices' : 'All voices'}>
+                {tts.availableVoices.filter((v) => tts.ttsMode === 'neural' || !tts.favoriteVoiceNames.includes(v.name)).map((v) => (
+                  <option key={v.id} value={v.id}>{tts.ttsMode === 'neural' ? v.name.replace('Microsoft ', '').replace(' Online (Natural)', '') : v.name} ({v.lang})</option>
                 ))}
               </optgroup>
             </select>
