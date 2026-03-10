@@ -347,7 +347,7 @@ async function speakNeural(
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          text: wrapInSSML(chunk),
+          text: chunk,
           voice: voiceId,
           rate,
           pitch: getNeuralPitch(),
